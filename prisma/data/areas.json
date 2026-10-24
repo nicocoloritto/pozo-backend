@@ -1,0 +1,38 @@
+[
+  {
+    "id": "alumbrado",
+    "nombre": "Alumbrado",
+    "categorias": ["StreetLight", "FallenPole"],
+    "plazoMaximoDias": 7
+  },
+  {
+    "id": "bacheo-veredas",
+    "nombre": "Bacheo y veredas",
+    "categorias": ["Pothole", "BrokenSidewalk"],
+    "plazoMaximoDias": 15
+  },
+  {
+    "id": "arbolado",
+    "nombre": "Arbolado",
+    "categorias": ["FallenTree"],
+    "plazoMaximoDias": 10
+  },
+  {
+    "id": "semaforos-transito",
+    "nombre": "Semáforos y tránsito",
+    "categorias": ["TrafficLight"],
+    "plazoMaximoDias": 5
+  },
+  {
+    "id": "higiene-urbana",
+    "nombre": "Higiene urbana",
+    "categorias": ["OverflowingBin"],
+    "plazoMaximoDias": 3
+  },
+  {
+    "id": "servicios-publicos",
+    "nombre": "Servicios públicos",
+    "categorias": ["Outage", "Trench"],
+    "plazoMaximoDias": 7
+  }
+]

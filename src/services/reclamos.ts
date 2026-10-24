@@ -1,0 +1,259 @@
+// Casos de uso de los reclamos. Mismas reglas que pozo/mobile/services/reclamos.ts, ahora sobre la
+// base de datos. Las reglas de transición viven en domain/maquinaEstados.ts (puras); acá
+// solo se lee, se decide y se persiste. Cada operación corre en una transacción para que dos
+// pedidos simultáneos (dos vecinos confirmando a la vez) no pisen el conteo.
+import { Prisma } from '@prisma/client';
+import type { Usuario } from '@prisma/client';
+import { prisma } from '../db';
+import { AppError } from '../domain/errores';
+import {
+  decidirPasarAReparacion,
+  decidirRechazar,
+  decidirResolver,
+  decidirTomar,
+  esEstadoFinal,
+} from '../domain/maquinaEstados';
+import type { Decision } from '../domain/maquinaEstados';
+import { CONFIRMACIONES_NECESARIAS } from '../domain/tipos';
+import type { Categoria, OrigenUbicacion, Severidad, TipoVoto } from '../domain/tipos';
+
+const INCLUIR = { historial: true, votos: true, notas: true } as const;
+
+type Tx = Prisma.TransactionClient;
+
+export type NuevoReclamo = {
+  municipioId: string;
+  category: Categoria;
+  severity: Severidad;
+  notes?: string;
+  photoUrl: string;
+  latitude: number;
+  longitude: number;
+  accuracyMeters?: number;
+  locationSource: OrigenUbicacion;
+  address?: string;
+  neighborhood?: string;
+  comuna?: number;
+};
+
+async function buscar(tx: Tx, id: string) {
+  const reclamo = await tx.reclamo.findUnique({ where: { id }, include: INCLUIR });
+  if (!reclamo) throw new AppError('NOT_FOUND', 'Este reclamo no existe o fue eliminado');
+  return reclamo;
+}
+
+// Un admin solo gestiona los reclamos de su propio municipio.
+function exigirMismoMunicipio(admin: Usuario, municipioId: string) {
+  if (admin.municipioId !== municipioId) {
+    throw new AppError('FORBIDDEN', 'Este reclamo es de otro municipio');
+  }
+}
+
+// El número de expediente también es el id del reclamo, así que no puede repetirse.
+async function generarCaseNumber(tx: Tx): Promise<string> {
+  const year = new Date().getFullYear().toString().slice(-2);
+  for (;;) {
+    const caseNumber = `EXP-${year}-${Math.floor(10000 + Math.random() * 90000)}`;
+    if (!(await tx.reclamo.findUnique({ where: { id: caseNumber }, select: { id: true } }))) return caseNumber;
+  }
+}
+
+// --- Consultas ------------------------------------------------------------------------
+
+// Del más nuevo al más viejo. Un admin ve solo los de su municipio; un vecino, todos los
+// del mapa (o solo los suyos con `soloMios`).
+export async function listar(usuario: Usuario, soloMios: boolean) {
+  return prisma.reclamo.findMany({
+    where: {
+      ...(usuario.rol === 'admin' ? { municipioId: usuario.municipioId ?? '' } : {}),
+      ...(soloMios ? { autorId: usuario.id } : {}),
+    },
+    include: INCLUIR,
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+export async function obtener(usuario: Usuario, id: string) {
+  const reclamo = await buscar(prisma, id);
+  if (usuario.rol === 'admin') exigirMismoMunicipio(usuario, reclamo.municipioId);
+  return reclamo;
+}
+
+// --- Vecinos --------------------------------------------------------------------------
+
+export async function publicar(autor: Usuario, input: NuevoReclamo) {
+  const municipio = await prisma.municipio.findUnique({ where: { id: input.municipioId } });
+  if (!municipio) throw new AppError('INVALID_INPUT', 'El municipio del reclamo no existe.');
+
+  return prisma.$transaction(async (tx) => {
+    const caseNumber = await generarCaseNumber(tx);
+    const ahora = new Date();
+    return tx.reclamo.create({
+      data: {
+        id: caseNumber,
+        caseNumber,
+        autorId: autor.id,
+        municipioId: input.municipioId,
+        category: input.category,
+        severity: input.severity,
+        status: 'Reportado',
+        notes: input.notes?.trim() || null,
+        photoUrl: input.photoUrl,
+        latitude: input.latitude,
+        longitude: input.longitude,
+        accuracyMeters: input.accuracyMeters ?? null,
+        locationSource: input.locationSource,
+        address: input.address ?? null,
+        neighborhood: input.neighborhood ?? null,
+        comuna: input.comuna ?? null,
+        createdAt: ahora,
+        historial: { create: { status: 'Reportado', description: 'Ingresado', autorId: autor.id, createdAt: ahora } },
+      },
+      include: INCLUIR,
+    });
+  });
+}
+
+// Deja el voto "sigue" del vecino (reemplazando un "yaNoEsta" previo) y, al llegar a
+// CONFIRMACIONES_NECESARIAS, y solo si el reclamo sigue "Reportado", lo pasa a
+// "ConfirmadoPorVecinos". Los estados siguientes los cambia el municipio.
+async function registrarSigue(tx: Tx, reclamoId: string, vecinoId: string, ahora: Date) {
+  await tx.voto.upsert({
+    where: { reclamoId_vecinoId: { reclamoId, vecinoId } },
+    create: { reclamoId, vecinoId, tipo: 'sigue' },
+    update: { tipo: 'sigue' },
+  });
+  const confirmaciones = await tx.voto.count({ where: { reclamoId, tipo: 'sigue' } });
+  const reclamo = await tx.reclamo.findUniqueOrThrow({ where: { id: reclamoId }, select: { status: true } });
+  const confirma = reclamo.status === 'Reportado' && confirmaciones >= CONFIRMACIONES_NECESARIAS;
+
+  await tx.reclamo.update({
+    where: { id: reclamoId },
+    data: {
+      ultimoVotoTipo: 'sigue',
+      ultimoVotoFecha: ahora,
+      ...(confirma
+        ? {
+            status: 'ConfirmadoPorVecinos',
+            historial: {
+              create: {
+                status: 'ConfirmadoPorVecinos',
+                description: `Confirmado por ${CONFIRMACIONES_NECESARIAS} vecinos`,
+                createdAt: ahora,
+              },
+            },
+          }
+        : {}),
+    },
+  });
+}
+
+function exigirAbierto(status: string) {
+  if (esEstadoFinal(status)) throw new AppError('INVALID_TRANSITION', 'Este reclamo ya está cerrado: no se puede votar');
+}
+
+// Un vecino confirma un reclamo ajeno una sola vez.
+export async function confirmar(vecino: Usuario, id: string) {
+  return prisma.$transaction(async (tx) => {
+    const reclamo = await buscar(tx, id);
+    if (reclamo.autorId === vecino.id) throw new AppError('OWN_RECLAMO', 'No podés confirmar tu propio reclamo');
+    exigirAbierto(reclamo.status);
+    if (reclamo.votos.some((v) => v.vecinoId === vecino.id && v.tipo === 'sigue')) {
+      throw new AppError('ALREADY_CONFIRMED', 'Ya confirmaste este reclamo');
+    }
+    await registrarSigue(tx, id, vecino.id, new Date());
+    return buscar(tx, id);
+  });
+}
+
+// Voto "¿Sigue ahí?" estilo Waze. Un voto por vecino: "sigue" o "yaNoEsta", nunca los dos;
+// votar lo otro cambia el voto y tocar el mismo otra vez lo saca. El autor no puede votar
+// "sigue" (sí "yaNoEsta"). "yaNoEsta" no cambia el estado: lo cierra el municipio. Sacar un
+// voto no vuelve el estado atrás.
+export async function votar(vecino: Usuario, id: string, tipo: TipoVoto) {
+  return prisma.$transaction(async (tx) => {
+    const reclamo = await buscar(tx, id);
+    exigirAbierto(reclamo.status);
+    if (tipo === 'sigue' && reclamo.autorId === vecino.id) {
+      throw new AppError('OWN_RECLAMO', 'No podés confirmar tu propio reclamo');
+    }
+
+    const previo = reclamo.votos.find((v) => v.vecinoId === vecino.id);
+    const clave = { reclamoId_vecinoId: { reclamoId: id, vecinoId: vecino.id } };
+
+    if (previo?.tipo === tipo) {
+      await tx.voto.delete({ where: clave });
+    } else if (tipo === 'sigue') {
+      await registrarSigue(tx, id, vecino.id, new Date());
+    } else {
+      await tx.voto.upsert({
+        where: clave,
+        create: { reclamoId: id, vecinoId: vecino.id, tipo },
+        update: { tipo },
+      });
+      await tx.reclamo.update({ where: { id }, data: { ultimoVotoTipo: 'yaNoEsta', ultimoVotoFecha: new Date() } });
+    }
+    return buscar(tx, id);
+  });
+}
+
+// --- Gestión municipal ----------------------------------------------------------------
+//
+// Toda transición de estado pasa por `transicionar`: busca el reclamo, le pide a `decidir`
+// el próximo estado (o que tire AppError si no vale en el estado actual), aplica los campos
+// extra y deja constancia en el historial con fecha y autor.
+
+async function transicionar(admin: Usuario, id: string, decidir: (reclamo: { status: string; category: string; areaAsignada: string | null }) => Decision) {
+  return prisma.$transaction(async (tx) => {
+    const reclamo = await buscar(tx, id);
+    exigirMismoMunicipio(admin, reclamo.municipioId);
+
+    const { status, description, extra } = decidir(reclamo);
+    await tx.reclamo.update({
+      where: { id },
+      data: {
+        status,
+        ...extra,
+        historial: { create: { status, description, autorId: admin.id } },
+      },
+    });
+    return buscar(tx, id);
+  });
+}
+
+export const tomar = (admin: Usuario, id: string) => transicionar(admin, id, decidirTomar);
+export const pasarAReparacion = (admin: Usuario, id: string) => transicionar(admin, id, decidirPasarAReparacion);
+export const resolver = (admin: Usuario, id: string, fotoResolucion: string) =>
+  transicionar(admin, id, (reclamo) => decidirResolver(reclamo, fotoResolucion));
+export const rechazar = (admin: Usuario, id: string, motivo: string) =>
+  transicionar(admin, id, (reclamo) => decidirRechazar(reclamo, motivo));
+
+async function editarAbierto(admin: Usuario, id: string, mensajeCerrado: string, data: Prisma.ReclamoUpdateInput) {
+  return prisma.$transaction(async (tx) => {
+    const reclamo = await buscar(tx, id);
+    exigirMismoMunicipio(admin, reclamo.municipioId);
+    if (esEstadoFinal(reclamo.status)) throw new AppError('INVALID_TRANSITION', mensajeCerrado);
+    await tx.reclamo.update({ where: { id }, data });
+    return buscar(tx, id);
+  });
+}
+
+export async function asignarArea(admin: Usuario, id: string, areaId: string) {
+  const area = await prisma.area.findUnique({ where: { id: areaId } });
+  if (!area) throw new AppError('INVALID_INPUT', 'El área no existe.');
+  return editarAbierto(admin, id, 'No se puede asignar un área a un reclamo cerrado', { area: { connect: { id: areaId } } });
+}
+
+export const definirFechaEstimada = (admin: Usuario, id: string, fechaEstimada: Date) =>
+  editarAbierto(admin, id, 'No se puede definir una fecha estimada en un reclamo cerrado', { fechaEstimada });
+
+export async function agregarNota(admin: Usuario, id: string, texto: string) {
+  const limpio = texto.trim();
+  if (!limpio) throw new AppError('NOTA_VACIA', 'La nota no puede estar vacía');
+  return prisma.$transaction(async (tx) => {
+    const reclamo = await buscar(tx, id);
+    exigirMismoMunicipio(admin, reclamo.municipioId);
+    await tx.nota.create({ data: { reclamoId: id, texto: limpio, autorId: admin.id } });
+    return buscar(tx, id);
+  });
+}

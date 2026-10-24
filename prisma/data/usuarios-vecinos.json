@@ -1,0 +1,35 @@
+[
+  {
+    "id": "vecino-1",
+    "firstName": "Lucía",
+    "lastName": "Fernández",
+    "sex": "F",
+    "documentNumber": "30111222",
+    "birthDate": "14/03/1988",
+    "email": "vecino1@pozo.com",
+    "password": "123456",
+    "neighborhood": "Caballito"
+  },
+  {
+    "id": "vecino-2",
+    "firstName": "Martín",
+    "lastName": "Suárez",
+    "sex": "M",
+    "documentNumber": "32456789",
+    "birthDate": "02/11/1990",
+    "email": "vecino2@pozo.com",
+    "password": "123456",
+    "neighborhood": "Palermo"
+  },
+  {
+    "id": "vecino-3",
+    "firstName": "Noelia",
+    "lastName": "Ramos",
+    "sex": "F",
+    "documentNumber": "35987654",
+    "birthDate": "27/07/1994",
+    "email": "vecino3@pozo.com",
+    "password": "123456",
+    "neighborhood": "Flores"
+  }
+]

@@ -1,0 +1,125 @@
+// La URL de la base está en prisma.config.ts (Prisma 7 ya no la lee desde el schema).
+// SQLite no tiene enums: estados, categorías y demás son texto y se validan en
+// src/domain/tipos.ts y en los esquemas de zod de cada ruta.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Municipio {
+  id       String    @id
+  nombre   String
+  sigla    String
+  usuarios Usuario[]
+  reclamos Reclamo[]
+}
+
+// Dependencia del municipio a la que se deriva un reclamo. `categorias` es un arreglo
+// serializado como JSON (["StreetLight","FallenPole"]).
+model Area {
+  id               String    @id
+  nombre           String
+  categorias       String
+  plazoMaximoDias  Int
+  reclamos         Reclamo[]
+}
+
+model Usuario {
+  id             String    @id
+  rol            String // "vecino" | "admin"
+  email          String    @unique // siempre en minúsculas
+  passwordHash   String
+  firstName      String
+  lastName       String?
+  sex            String?
+  documentNumber String?
+  // Solo los dígitos del DNI: es lo que garantiza "un DNI, una cuenta" aunque se escriba
+  // con puntos. Nulo en los admin (SQLite permite varios nulos en un campo único).
+  dniNormalizado String?   @unique
+  birthDate      String?
+  neighborhood   String?
+  municipioId    String? // solo admin
+  municipio      Municipio? @relation(fields: [municipioId], references: [id])
+  createdAt      DateTime  @default(now())
+  reclamos       Reclamo[]
+  votos          Voto[]
+}
+
+model Reclamo {
+  id               String    @id // = caseNumber, como en la app
+  caseNumber       String    @unique
+  autorId          String
+  autor            Usuario   @relation(fields: [autorId], references: [id])
+  municipioId      String
+  municipio        Municipio @relation(fields: [municipioId], references: [id])
+  category         String
+  severity         String
+  status           String
+  notes            String?
+  photoUrl         String
+  photoKey         String?
+  latitude         Float
+  longitude        Float
+  accuracyMeters   Float?
+  locationSource   String
+  address          String?
+  neighborhood     String?
+  comuna           Int?
+  ultimoVotoTipo   String?
+  ultimoVotoFecha  DateTime?
+  createdAt        DateTime  @default(now())
+
+  areaAsignada     String?
+  area             Area?     @relation(fields: [areaAsignada], references: [id])
+  fechaEstimada    DateTime?
+  fotoResolucion   String?
+  fotoResolucionKey String?
+  motivoRechazo    String?
+
+  historial        CambioEstado[]
+  votos            Voto[]
+  notas            Nota[]
+
+  @@index([municipioId, status])
+  @@index([autorId])
+}
+
+model CambioEstado {
+  id          Int      @id @default(autoincrement())
+  reclamoId   String
+  reclamo     Reclamo  @relation(fields: [reclamoId], references: [id], onDelete: Cascade)
+  status      String
+  description String
+  autorId     String?
+  createdAt   DateTime @default(now())
+
+  @@index([reclamoId])
+}
+
+// Un voto por vecino y reclamo: "sigue" (confirmación) o "yaNoEsta". La restricción única
+// es lo que impide votar dos veces aunque lleguen dos pedidos a la vez.
+model Voto {
+  reclamoId String
+  reclamo   Reclamo  @relation(fields: [reclamoId], references: [id], onDelete: Cascade)
+  vecinoId  String
+  vecino    Usuario  @relation(fields: [vecinoId], references: [id], onDelete: Cascade)
+  tipo      String // "sigue" | "yaNoEsta"
+  createdAt DateTime @default(now())
+
+  @@id([reclamoId, vecinoId])
+}
+
+model Nota {
+  id        Int      @id @default(autoincrement())
+  reclamoId String
+  reclamo   Reclamo  @relation(fields: [reclamoId], references: [id], onDelete: Cascade)
+  texto     String
+  autorId   String
+  fecha     DateTime @default(now())
+
+  @@index([reclamoId])
+}

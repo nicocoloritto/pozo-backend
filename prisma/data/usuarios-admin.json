@@ -1,0 +1,9 @@
+[
+  {
+    "id": "admin-caba",
+    "firstName": "Admin CABA",
+    "email": "admin@caba.gob.ar",
+    "password": "123456",
+    "municipioId": "caba"
+  }
+]
