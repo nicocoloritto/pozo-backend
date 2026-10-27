@@ -16,6 +16,20 @@ model Municipio {
   sigla    String
   usuarios Usuario[]
   reclamos Reclamo[]
+  barrios  Barrio[]
+}
+
+// Los reclamos se unen a su barrio por (municipioId, nombre): ver services/estadisticas.ts.
+model Barrio {
+  id          String    @id
+  nombre      String
+  comuna      Int
+  latitude    Float
+  longitude   Float
+  municipioId String
+  municipio   Municipio @relation(fields: [municipioId], references: [id])
+
+  @@unique([municipioId, nombre])
 }
 
 // Dependencia del municipio a la que se deriva un reclamo. `categorias` es un arreglo

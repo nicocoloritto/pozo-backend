@@ -20,7 +20,7 @@ npm run dev              # http://localhost:3000
 ```
 
 ```bash
-npm test                 # 41 tests, usan su propia base (test.db)
+npm test                 # 46 tests, usan su propia base (test.db)
 npm run typecheck
 npm run build && npm start
 ```
@@ -47,6 +47,10 @@ del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del to
 | `POST /auth/login` | público | Inicia sesión. |
 | `GET /auth/me` | autenticado | Usuario de la sesión. |
 | `GET /municipios`, `GET /areas` | autenticado | Catálogos. |
+| `GET /municipios/:id/barrios` | autenticado | Barrios del municipio, por comuna y nombre. Un admin solo consulta el suyo. |
+| `GET /barrios/:id/estadisticas` | autenticado | Totales, % resuelto, días promedio, por categoría, por estado y últimos 6 meses, calculados con los reclamos del barrio. |
+| `GET /municipios/:id/ranking` | autenticado | Barrios ordenados por % de resolución (a igual %, antes los que tienen reclamos). |
+| `GET /municipios/:id/evolucion` | autenticado | Reclamos por mes del municipio en los últimos 6 meses. |
 | `GET /reclamos` | autenticado | Lista del más nuevo al más viejo. `?mios=1` deja solo los propios. El municipio ve solo los suyos. |
 | `GET /reclamos/:id` | autenticado | Detalle con historial, votos y notas. |
 | `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). |
@@ -91,6 +95,5 @@ tests/                 reglas de negocio y API completa (supertest)
 ## Pendiente
 
 - Conectar la app (reemplazar `mobile/services/` del repo pozo por llamadas a esta API).
-- Barrios y estadísticas (`mobile/services/estadisticas.ts` sigue leyendo JSON).
 - Límite de intentos en el login y borrado de la cuenta propia.
 - Desplegar: hoy corre solo en local. En producción `JWT_SECRET` es obligatorio.

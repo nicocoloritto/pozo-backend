@@ -23,6 +23,7 @@ async function limpiar() {
   await prisma.cambioEstado.deleteMany();
   await prisma.reclamo.deleteMany();
   await prisma.usuario.deleteMany();
+  await prisma.barrio.deleteMany();
 }
 
 async function crearBase() {
@@ -32,6 +33,13 @@ async function crearBase() {
     where: { id: 'bacheo' },
     create: { id: 'bacheo', nombre: 'Bacheo', categorias: '["Pothole"]', plazoMaximoDias: 10 },
     update: {},
+  });
+  await prisma.barrio.createMany({
+    data: [
+      { id: 'caballito', nombre: 'Caballito', comuna: 6, municipioId: 'caba', latitude: -34.62, longitude: -58.44 },
+      { id: 'flores', nombre: 'Flores', comuna: 7, municipioId: 'caba', latitude: -34.63, longitude: -58.46 },
+      { id: 'palermo', nombre: 'Palermo', comuna: 14, municipioId: 'caba', latitude: -34.58, longitude: -58.43 },
+    ],
   });
   const passwordHash = await bcrypt.hash('123456', 4);
   await prisma.usuario.createMany({
@@ -429,5 +437,110 @@ describe('fotos', () => {
     expect(mala.body.error.code).toBe('INVALID_INPUT');
 
     expect((await request(app).post('/fotos').attach('foto', Buffer.from('x'), 'x.jpg')).status).toBe(401);
+  });
+});
+
+describe('estadísticas', () => {
+  let contador = 0;
+  // Inserta el reclamo directo en la base para controlar las fechas. Si `resueltoEnDias` viene,
+  // el historial registra el cambio a Resuelto esa cantidad de días después del alta.
+  async function crearReclamo(autorId: string, barrio: string, status: string, category = 'Pothole', resueltoEnDias?: number) {
+    const createdAt = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+    contador++;
+    await prisma.reclamo.create({
+      data: {
+        id: `EXP-TEST-${contador}`,
+        caseNumber: `EXP-TEST-${contador}`,
+        autorId,
+        municipioId: 'caba',
+        category,
+        severity: 'Low',
+        status,
+        photoUrl: 'http://localhost/uploads/foto.jpg',
+        latitude: -34.6,
+        longitude: -58.4,
+        locationSource: 'Device',
+        neighborhood: barrio,
+        createdAt,
+        historial:
+          resueltoEnDias === undefined
+            ? undefined
+            : { create: { status: 'Resuelto', description: 'Resuelto', createdAt: new Date(createdAt.getTime() + resueltoEnDias * 24 * 60 * 60 * 1000) } },
+      },
+    });
+  }
+
+  it('lista los barrios del municipio y el admin solo consulta el suyo', async () => {
+    const vecino = await registrarVecino(1);
+    const barrios = await request(app).get('/municipios/caba/barrios').set(con(vecino.token));
+    expect(barrios.body.map((b: { id: string }) => b.id)).toEqual(['caballito', 'flores', 'palermo']);
+    expect(barrios.body[0]).toMatchObject({ nombre: 'Caballito', comuna: 6, municipioId: 'caba' });
+
+    const otro = await loginAdmin('admin@otro.gob.ar');
+    for (const ruta of ['/municipios/caba/barrios', '/barrios/caballito/estadisticas', '/municipios/caba/ranking', '/municipios/caba/evolucion']) {
+      const res = await request(app).get(ruta).set(con(otro));
+      expect(res.status).toBe(403);
+    }
+    expect((await request(app).get('/municipios/nada/barrios').set(con(vecino.token))).status).toBe(404);
+    expect((await request(app).get('/barrios/nada/estadisticas').set(con(vecino.token))).status).toBe(404);
+    expect((await request(app).get('/municipios/caba/ranking')).status).toBe(401);
+  });
+
+  it('calcula las estadísticas de un barrio a partir de sus reclamos', async () => {
+    const vecino = await registrarVecino(1);
+    await crearReclamo(vecino.id, 'Caballito', 'Resuelto', 'Pothole', 2);
+    await crearReclamo(vecino.id, 'Caballito', 'Resuelto', 'Outage', 4);
+    await crearReclamo(vecino.id, 'Caballito', 'Reportado', 'Outage');
+    await crearReclamo(vecino.id, 'Caballito', 'Rechazado');
+    await crearReclamo(vecino.id, 'Palermo', 'Reportado');
+
+    const res = await request(app).get('/barrios/caballito/estadisticas').set(con(await loginAdmin()));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      barrioId: 'caballito',
+      totalReclamos: 4,
+      resueltos: 2,
+      porcentajeResolucion: 50,
+      tiempoPromedioResolucionDias: 3,
+      porCategoria: { Pothole: 2, Outage: 2, Trench: 0 },
+      porEstado: { Resuelto: 2, Reportado: 1, Rechazado: 1, EnReparacion: 0 },
+    });
+    expect(res.body.evolucionUltimos6Meses).toHaveLength(6);
+    expect(res.body.evolucionUltimos6Meses.reduce((suma: number, m: { reclamos: number }) => suma + m.reclamos, 0)).toBe(4);
+  });
+
+  it('un barrio sin reclamos devuelve todo en 0', async () => {
+    const vecino = await registrarVecino(1);
+    const res = await request(app).get('/barrios/flores/estadisticas').set(con(vecino.token));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ totalReclamos: 0, resueltos: 0, porcentajeResolucion: 0, tiempoPromedioResolucionDias: 0 });
+    expect(Object.values(res.body.porCategoria).every((n) => n === 0)).toBe(true);
+    expect(Object.values(res.body.porEstado).every((n) => n === 0)).toBe(true);
+    expect(res.body.evolucionUltimos6Meses.map((m: { reclamos: number }) => m.reclamos)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  it('ordena el ranking por % de resolución y deja al final a los barrios sin reclamos', async () => {
+    const vecino = await registrarVecino(1);
+    await crearReclamo(vecino.id, 'Caballito', 'Resuelto', 'Pothole', 1);
+    await crearReclamo(vecino.id, 'Palermo', 'Reportado');
+
+    const res = await request(app).get('/municipios/caba/ranking').set(con(await loginAdmin()));
+    // Flores empata con Palermo en 0% y va antes por nombre, pero no tiene reclamos.
+    expect(res.body).toEqual([
+      { barrioId: 'caballito', nombre: 'Caballito', porcentajeResolucion: 100, puesto: 1 },
+      { barrioId: 'palermo', nombre: 'Palermo', porcentajeResolucion: 0, puesto: 2 },
+      { barrioId: 'flores', nombre: 'Flores', porcentajeResolucion: 0, puesto: 3 },
+    ]);
+  });
+
+  it('suma la evolución de todos los reclamos del municipio', async () => {
+    const vecino = await registrarVecino(1);
+    await crearReclamo(vecino.id, 'Caballito', 'Reportado');
+    await crearReclamo(vecino.id, 'Fuera del catálogo', 'Reportado');
+
+    const res = await request(app).get('/municipios/caba/evolucion').set(con(await loginAdmin()));
+    expect(res.body).toHaveLength(6);
+    expect(res.body.reduce((suma: number, m: { reclamos: number }) => suma + m.reclamos, 0)).toBe(2);
+    expect(Object.keys(res.body[0]).sort()).toEqual(['mes', 'reclamos']);
   });
 });
