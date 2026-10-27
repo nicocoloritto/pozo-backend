@@ -3,6 +3,7 @@ import express from 'express';
 import { manejarErrores, rutaInexistente } from './middleware/errores';
 import { rutasAuth } from './routes/auth';
 import { rutasCatalogo } from './routes/catalogo';
+import { rutasEstadisticas } from './routes/estadisticas';
 import { carpetaUploads, rutasFotos } from './routes/fotos';
 import { rutasReclamos } from './routes/reclamos';
 
@@ -22,6 +23,7 @@ export function crearApp() {
   app.use('/reclamos', rutasReclamos);
   app.use('/fotos', rutasFotos);
   app.use('/', rutasCatalogo);
+  app.use('/', rutasEstadisticas);
 
   app.use(rutaInexistente);
   app.use(manejarErrores);

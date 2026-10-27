@@ -1,5 +1,5 @@
 // Carga en la base los mismos datos de prueba que usa la app (copia de pozo/mobile/data en prisma/data): municipio,
-// áreas, cuentas de prueba (contraseña 123456) y los 17 reclamos de ejemplo. Es seguro
+// áreas, barrios, cuentas de prueba (contraseña 123456) y los 17 reclamos de ejemplo. Es seguro
 // correrlo más de una vez: lo que ya existe no se pisa.
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +14,7 @@ function leer<T>(archivo: string): T {
 }
 
 type MunicipioSeed = { id: string; nombre: string; sigla: string };
+type BarrioSeed = { id: string; nombre: string; comuna: number; municipioId: string; latitude: number; longitude: number };
 type AreaSeed = { id: string; nombre: string; categorias: string[]; plazoMaximoDias: number };
 type VecinoSeed = {
   id: string;
@@ -61,6 +62,7 @@ type ReclamoSeed = {
 async function main() {
   const municipios = leer<MunicipioSeed[]>('municipios.json');
   const areas = leer<AreaSeed[]>('areas.json');
+  const barrios = leer<BarrioSeed[]>('barrios.json');
   const vecinos = leer<VecinoSeed[]>('usuarios-vecinos.json');
   const admins = leer<AdminSeed[]>('usuarios-admin.json');
   const reclamos = leer<ReclamoSeed[]>('reclamos.json');
@@ -71,6 +73,10 @@ async function main() {
   for (const a of areas) {
     const data = { nombre: a.nombre, categorias: JSON.stringify(a.categorias), plazoMaximoDias: a.plazoMaximoDias };
     await prisma.area.upsert({ where: { id: a.id }, create: { id: a.id, ...data }, update: {} });
+  }
+
+  for (const b of barrios) {
+    await prisma.barrio.upsert({ where: { id: b.id }, create: b, update: {} });
   }
 
   const idsReales = new Set<string>();
@@ -176,7 +182,7 @@ async function main() {
   }
 
   console.log(
-    `[seed] ${municipios.length} municipio, ${areas.length} áreas, ${vecinos.length + admins.length} cuentas de prueba, ` +
+    `[seed] ${municipios.length} municipio, ${areas.length} áreas, ${barrios.length} barrios, ${vecinos.length + admins.length} cuentas de prueba, ` +
       `${creados} reclamos nuevos (de ${reclamos.length}).`
   );
 }
