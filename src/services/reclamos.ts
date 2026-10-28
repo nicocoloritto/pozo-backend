@@ -5,6 +5,7 @@
 import { Prisma } from '@prisma/client';
 import type { Usuario } from '@prisma/client';
 import { prisma } from '../db';
+import { distanciaEnMetros, RADIO_RECLAMO_CERCANO_METROS, rectanguloAlrededor } from '../domain/distancia';
 import { AppError } from '../domain/errores';
 import {
   decidirPasarAReparacion,
@@ -16,6 +17,7 @@ import {
 import type { Decision } from '../domain/maquinaEstados';
 import { CONFIRMACIONES_NECESARIAS } from '../domain/tipos';
 import type { Categoria, OrigenUbicacion, Severidad, TipoVoto } from '../domain/tipos';
+import { aReclamoDto } from './dto';
 
 const INCLUIR = { historial: true, votos: true, notas: true } as const;
 
@@ -34,6 +36,8 @@ export type NuevoReclamo = {
   address?: string;
   neighborhood?: string;
   comuna?: number;
+  // El vecino vio el aviso de reclamo cercano y dice que es otro problema.
+  publicarIgual?: boolean;
 };
 
 async function buscar(tx: Tx, id: string) {
@@ -81,11 +85,39 @@ export async function obtener(usuario: Usuario, id: string) {
 
 // --- Vecinos --------------------------------------------------------------------------
 
+// Reclamo abierto de la misma categoría a menos de RADIO_RECLAMO_CERCANO_METROS, el más
+// cercano. Incluye los del propio autor: también es un duplicado si lo carga dos veces.
+async function buscarCercano(tx: Tx, input: NuevoReclamo) {
+  const candidatos = await tx.reclamo.findMany({
+    where: {
+      category: input.category,
+      status: { notIn: ['Resuelto', 'Rechazado'] },
+      ...rectanguloAlrededor(input, RADIO_RECLAMO_CERCANO_METROS),
+    },
+    include: INCLUIR,
+  });
+  return candidatos
+    .map((reclamo) => ({ reclamo, distanciaMetros: distanciaEnMetros(input, reclamo) }))
+    .filter((c) => c.distanciaMetros < RADIO_RECLAMO_CERCANO_METROS)
+    .sort((a, b) => a.distanciaMetros - b.distanciaMetros)[0];
+}
+
 export async function publicar(autor: Usuario, input: NuevoReclamo) {
   const municipio = await prisma.municipio.findUnique({ where: { id: input.municipioId } });
   if (!municipio) throw new AppError('INVALID_INPUT', 'El municipio del reclamo no existe.');
 
+  // El chequeo de duplicados corre dentro de la misma transacción que el alta: así, si dos
+  // vecinos publican a la vez en el mismo lugar, el segundo ya ve el reclamo del primero.
   return prisma.$transaction(async (tx) => {
+    if (!input.publicarIgual) {
+      const cercano = await buscarCercano(tx, input);
+      if (cercano) {
+        throw new AppError('RECLAMO_CERCANO', 'Ya hay un reclamo parecido a menos de 50 m.', {
+          reclamo: aReclamoDto(cercano.reclamo),
+          distanciaMetros: Math.round(cercano.distanciaMetros),
+        });
+      }
+    }
     const caseNumber = await generarCaseNumber(tx);
     const ahora = new Date();
     return tx.reclamo.create({

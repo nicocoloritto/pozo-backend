@@ -143,6 +143,29 @@ describe('auth', () => {
     expect(res.body.error.code).toBe('EMAIL_TAKEN');
   });
 
+  it('dice si un DNI ya tiene cuenta solo si coinciden DNI, sexo y fecha de nacimiento', async () => {
+    await registrarVecino(1);
+    const consultar = (cuerpo: Record<string, unknown>) => request(app).post('/auth/dni-registrado').send(cuerpo);
+
+    const mismo = await consultar({ documentNumber: '30.000.001', sex: 'f', birthDate: '01/01/1990' });
+    expect(mismo.status).toBe(200);
+    expect(mismo.body).toEqual({ registrado: true });
+
+    for (const cuerpo of [
+      { documentNumber: '30000001', sex: 'M', birthDate: '01/01/1990' },
+      { documentNumber: '30000001', sex: 'F', birthDate: '02/01/1990' },
+      { documentNumber: '40000000', sex: 'F', birthDate: '01/01/1990' },
+    ]) {
+      const res = await consultar(cuerpo);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ registrado: false });
+    }
+
+    const incompleto = await consultar({ documentNumber: '30000001' });
+    expect(incompleto.status).toBe(400);
+    expect(incompleto.body.error.code).toBe('INVALID_INPUT');
+  });
+
   it('valida los datos del registro', async () => {
     const res = await request(app).post('/auth/registro').send({ email: 'no-es-email' });
     expect(res.status).toBe(400);
@@ -198,6 +221,61 @@ describe('publicar reclamos', () => {
   it('no deja publicar al municipio', async () => {
     const res = await request(app).post('/reclamos').set(con(await loginAdmin())).send(reclamoValido);
     expect(res.status).toBe(403);
+  });
+});
+
+describe('reclamos duplicados', () => {
+  const A_30_METROS = { latitude: reclamoValido.latitude + 0.00027 };
+  const A_110_METROS = { latitude: reclamoValido.latitude + 0.001 };
+
+  it('rechaza un reclamo de la misma categoría a menos de 50 m y devuelve el existente', async () => {
+    const existente = await publicar((await registrarVecino(1)).token);
+    const res = await request(app)
+      .post('/reclamos')
+      .set(con((await registrarVecino(2)).token))
+      .send({ ...reclamoValido, ...A_30_METROS });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('RECLAMO_CERCANO');
+    expect(res.body.error.reclamo.id).toBe(existente.id);
+    expect(res.body.error.distanciaMetros).toBeGreaterThan(25);
+    expect(res.body.error.distanciaMetros).toBeLessThan(35);
+    expect(await prisma.reclamo.count()).toBe(1);
+  });
+
+  it('también avisa si el reclamo cercano es del mismo autor', async () => {
+    const vecino = await registrarVecino(1);
+    await publicar(vecino.token);
+    const res = await request(app).post('/reclamos').set(con(vecino.token)).send(reclamoValido);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('RECLAMO_CERCANO');
+  });
+
+  it('publica si es otra categoría, si está a más de 50 m o si el cercano ya está cerrado', async () => {
+    const vecino = await registrarVecino(1);
+    const cerrado = await publicar(vecino.token, { category: 'StreetLight' });
+    await prisma.reclamo.update({ where: { id: cerrado.id }, data: { status: 'Resuelto' } });
+    await publicar(vecino.token);
+
+    await publicar(vecino.token, { category: 'BrokenSidewalk' });
+    await publicar(vecino.token, A_110_METROS);
+    await publicar(vecino.token, { category: 'StreetLight' });
+  });
+
+  it('publica igual si el vecino indica que es otro problema', async () => {
+    const vecino = await registrarVecino(1);
+    await publicar(vecino.token);
+    await publicar(vecino.token, { ...A_30_METROS, publicarIgual: true });
+    expect(await prisma.reclamo.count()).toBe(2);
+  });
+
+  it('de dos publicaciones simultáneas en el mismo lugar, solo una entra', async () => {
+    const uno = await registrarVecino(1);
+    const dos = await registrarVecino(2);
+    const respuestas = await Promise.all(
+      [uno, dos].map((v) => request(app).post('/reclamos').set(con(v.token)).send(reclamoValido))
+    );
+    expect(respuestas.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(await prisma.reclamo.count()).toBe(1);
   });
 });
 
@@ -387,7 +465,7 @@ describe('consultas', () => {
     const dos = await registrarVecino(2);
     const primero = await publicar(uno.token);
     await new Promise((r) => setTimeout(r, 5));
-    const segundo = await publicar(dos.token);
+    const segundo = await publicar(dos.token, { category: 'BrokenSidewalk' });
 
     const todos = await request(app).get('/reclamos').set(con(uno.token));
     expect(todos.body.map((r: { id: string }) => r.id)).toEqual([segundo.id, primero.id]);

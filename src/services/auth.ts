@@ -75,6 +75,18 @@ export async function registrar(datos: DatosRegistro) {
   }
 }
 
+// El sexo y la fecha de nacimiento salen del mismo escaneo que el número: pedirlos hace que
+// esta consulta no sirva para averiguar si un DNI ajeno tiene cuenta sabiendo solo el número.
+// Si no coinciden los tres, responde que no: el registro igual rechaza el DNI repetido.
+export async function dniRegistrado(documentNumber: string, sex: string, birthDate: string): Promise<boolean> {
+  const usuario = await prisma.usuario.findUnique({
+    where: { dniNormalizado: normalizarNumeroDni(documentNumber) },
+    select: { sex: true, birthDate: true },
+  });
+  if (!usuario) return false;
+  return usuario.sex?.trim().toUpperCase() === sex.trim().toUpperCase() && usuario.birthDate?.trim() === birthDate.trim();
+}
+
 export async function login(emailCrudo: string, password: string) {
   const usuario = await prisma.usuario.findUnique({ where: { email: emailCrudo.trim().toLowerCase() } });
   if (!usuario) throw new AppError('EMAIL_NOT_FOUND', 'No hay una cuenta con este email');

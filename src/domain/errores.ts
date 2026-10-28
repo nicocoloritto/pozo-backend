@@ -10,6 +10,7 @@ export type CodigoError =
   | 'FOTO_REQUIRED'
   | 'MOTIVO_REQUIRED'
   | 'NOTA_VACIA'
+  | 'RECLAMO_CERCANO'
   | 'EMAIL_TAKEN'
   | 'DNI_TAKEN'
   | 'EMAIL_NOT_FOUND'
@@ -29,6 +30,7 @@ const STATUS: Record<CodigoError, number> = {
   EMAIL_TAKEN: 409,
   DNI_TAKEN: 409,
   INVALID_TRANSITION: 409,
+  RECLAMO_CERCANO: 409,
   AREA_REQUIRED: 422,
   FOTO_REQUIRED: 422,
   MOTIVO_REQUIRED: 422,
@@ -38,10 +40,13 @@ const STATUS: Record<CodigoError, number> = {
 export class AppError extends Error {
   code: CodigoError;
   status: number;
+  // Datos extra que viajan junto al código y el mensaje (por ejemplo, el reclamo cercano).
+  datos?: Record<string, unknown>;
 
-  constructor(code: CodigoError, message: string) {
+  constructor(code: CodigoError, message: string, datos?: Record<string, unknown>) {
     super(message);
     this.code = code;
     this.status = STATUS[code];
+    this.datos = datos;
   }
 }

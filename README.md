@@ -20,7 +20,7 @@ npm run dev              # http://localhost:3000
 ```
 
 ```bash
-npm test                 # 46 tests, usan su propia base (test.db)
+npm test                 # 52 tests, usan su propia base (test.db)
 npm run typecheck
 npm run build && npm start
 ```
@@ -44,6 +44,7 @@ del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del to
 | Método y ruta | Quién | Qué hace |
 |---|---|---|
 | `POST /auth/registro` | público | Crea una cuenta de vecino con los datos del DNI. Un DNI, una cuenta. |
+| `POST /auth/dni-registrado` | público | `{ documentNumber, sex, birthDate }` → `{ registrado }`. `true` solo si coinciden los tres. |
 | `POST /auth/login` | público | Inicia sesión. |
 | `GET /auth/me` | autenticado | Usuario de la sesión. |
 | `GET /municipios`, `GET /areas` | autenticado | Catálogos. |
@@ -53,7 +54,7 @@ del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del to
 | `GET /municipios/:id/evolucion` | autenticado | Reclamos por mes del municipio en los últimos 6 meses. |
 | `GET /reclamos` | autenticado | Lista del más nuevo al más viejo. `?mios=1` deja solo los propios. El municipio ve solo los suyos. |
 | `GET /reclamos/:id` | autenticado | Detalle con historial, votos y notas. |
-| `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). |
+| `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). Si hay uno abierto de la misma categoría a menos de 50 m responde `409 RECLAMO_CERCANO` con `reclamo` y `distanciaMetros`, salvo con `publicarIgual: true`. |
 | `POST /reclamos/:id/confirmaciones` | vecino | "Sigue ahí". Con 3 pasa a `ConfirmadoPorVecinos`. |
 | `POST /reclamos/:id/votos` | vecino | `{ "tipo": "sigue" \| "yaNoEsta" }`. Un voto por vecino; repetirlo lo saca. |
 | `POST /reclamos/:id/tomar` | municipio | Pasa a `EnviadoAlMunicipio`. Las categorías peligrosas se toman sin confirmaciones. |
@@ -91,6 +92,10 @@ tests/                 reglas de negocio y API completa (supertest)
   lleguen dos pedidos a la vez.
 - **SQLite sin enums.** Estados y categorías son texto y se validan en el borde.
 - **Aislamiento por municipio.** Un admin no ve ni gestiona reclamos de otro municipio.
+- **Duplicados y DNI ya registrado.** Las reglas y el porqué están en
+  [pozo/docs/decisiones.md](https://github.com/nicocoloritto/pozo/blob/dev/docs/decisiones.md).
+  El chequeo de duplicados corre en la misma transacción que el alta y depende de que SQLite
+  ejecute las transacciones de a una: con Postgres hay que agregar un lock.
 
 ## Pendiente
 
