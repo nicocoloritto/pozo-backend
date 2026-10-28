@@ -20,7 +20,7 @@ npm run dev              # http://localhost:3000
 ```
 
 ```bash
-npm test                 # 52 tests, usan su propia base (test.db)
+npm test                 # 67 tests, usan su propia base (test.db)
 npm run typecheck
 npm run build && npm start
 ```
@@ -54,6 +54,7 @@ del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del to
 | `GET /municipios/:id/evolucion` | autenticado | Reclamos por mes del municipio en los últimos 6 meses. |
 | `GET /reclamos` | autenticado | Lista del más nuevo al más viejo. `?mios=1` deja solo los propios. El municipio ve solo los suyos. |
 | `GET /reclamos/:id` | autenticado | Detalle con historial, votos y notas. |
+| | | Todo reclamo trae además `prioridad`, `desglosePrioridad` (`[{ motivo, puntos }]`) y `vencido`, calculados en cada respuesta (`src/domain/prioridad.ts`). |
 | `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). Si hay uno abierto de la misma categoría a menos de 50 m responde `409 RECLAMO_CERCANO` con `reclamo` y `distanciaMetros`, salvo con `publicarIgual: true`. |
 | `POST /reclamos/:id/confirmaciones` | vecino | "Sigue ahí". Con 3 pasa a `ConfirmadoPorVecinos`. |
 | `POST /reclamos/:id/votos` | vecino | `{ "tipo": "sigue" \| "yaNoEsta" }`. Un voto por vecino; repetirlo lo saca. |
@@ -92,6 +93,8 @@ tests/                 reglas de negocio y API completa (supertest)
   lleguen dos pedidos a la vez.
 - **SQLite sin enums.** Estados y categorías son texto y se validan en el borde.
 - **Aislamiento por municipio.** Un admin no ve ni gestiona reclamos de otro municipio.
+- **Prioridad y vencido en el servidor.** La app solo los muestra. No se guardan porque cambian
+  con los días.
 - **Duplicados y DNI ya registrado.** Las reglas y el porqué están en
   [pozo/docs/decisiones.md](https://github.com/nicocoloritto/pozo/blob/dev/docs/decisiones.md).
   El chequeo de duplicados corre en la misma transacción que el alta y depende de que SQLite
