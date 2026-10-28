@@ -474,6 +474,35 @@ describe('consultas', () => {
     expect(mios.body.map((r: { id: string }) => r.id)).toEqual([primero.id]);
   });
 
+  it('cada reclamo trae su prioridad con el desglose y si está fuera de plazo', async () => {
+    const vecino = await registrarVecino(1);
+    const { id } = await publicar(vecino.token, { category: 'FallenTree', severity: 'High' });
+    const admin = await loginAdmin();
+    await request(app).post(`/reclamos/${id}/tomar`).set(con(admin));
+    // Creado hace 30 días y tomado hace 12: el plazo de Bacheo (10 días) se cuenta desde la toma.
+    const dia = 24 * 60 * 60 * 1000;
+    await prisma.reclamo.update({ where: { id }, data: { createdAt: new Date(Date.now() - 30 * dia), areaAsignada: 'bacheo' } });
+    await prisma.cambioEstado.updateMany({
+      where: { reclamoId: id, status: 'EnviadoAlMunicipio' },
+      data: { createdAt: new Date(Date.now() - 12 * dia) },
+    });
+
+    const res = await request(app).get(`/reclamos/${id}`).set(con(admin));
+    expect(res.body.prioridad).toBe(130);
+    expect(res.body.desglosePrioridad).toEqual([
+      { motivo: 'Categoría peligrosa', puntos: 50 },
+      { motivo: 'Severidad alta', puntos: 20 },
+      { motivo: '30 días abierto', puntos: 60 },
+    ]);
+    expect(res.body.vencido).toBe(true);
+
+    await prisma.cambioEstado.updateMany({
+      where: { reclamoId: id, status: 'EnviadoAlMunicipio' },
+      data: { createdAt: new Date(Date.now() - 5 * dia) },
+    });
+    expect((await request(app).get('/reclamos').set(con(admin))).body[0].vencido).toBe(false);
+  });
+
   it('expone municipios y áreas', async () => {
     const vecino = await registrarVecino(1);
     expect((await request(app).get('/municipios').set(con(vecino.token))).body).toHaveLength(2);

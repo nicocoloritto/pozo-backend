@@ -2,14 +2,28 @@
 // pozo/mobile/types/user.ts), para que reemplazar los services/ de la app no obligue a tocar
 // las pantallas. Los campos vacíos se omiten en vez de viajar como null.
 import type { Area, CambioEstado, Nota, Reclamo, Usuario, Voto } from '@prisma/client';
+import { calcularPrioridad, desglosarPrioridad, estaVencido } from '../domain/prioridad';
 
-export type ReclamoConRelaciones = Reclamo & { historial: CambioEstado[]; votos: Voto[]; notas: Nota[] };
+export type ReclamoConRelaciones = Reclamo & { historial: CambioEstado[]; votos: Voto[]; notas: Nota[]; area: Area | null };
+
+// Lo que hace falta además del reclamo para calcular prioridad y vencimiento: el plazo que se
+// usa cuando todavía no tiene área (el más corto de todas) y el momento del cálculo.
+export type ContextoReclamoDto = { plazoSinAreaDias: number | null; ahora: Date };
 
 function opcional<T>(valor: T | null): T | undefined {
   return valor === null ? undefined : valor;
 }
 
-export function aReclamoDto(r: ReclamoConRelaciones) {
+// `prioridad`, `desglosePrioridad` y `vencido` se calculan en cada respuesta, no se guardan:
+// cambian solos con el paso de los días.
+export function aReclamoDto(r: ReclamoConRelaciones, contexto: ContextoReclamoDto) {
+  const camposPrioridad = {
+    category: r.category,
+    severity: r.severity,
+    createdAt: r.createdAt,
+    confirmaciones: r.votos.filter((v) => v.tipo === 'sigue').length,
+    yaNoEsta: r.votos.filter((v) => v.tipo === 'yaNoEsta').length,
+  };
   return {
     id: r.id,
     caseNumber: r.caseNumber,
@@ -53,6 +67,13 @@ export function aReclamoDto(r: ReclamoConRelaciones) {
     fotoResolucion: opcional(r.fotoResolucion),
     fotoResolucionKey: opcional(r.fotoResolucionKey),
     motivoRechazo: opcional(r.motivoRechazo),
+    prioridad: calcularPrioridad(camposPrioridad, contexto.ahora),
+    desglosePrioridad: desglosarPrioridad(camposPrioridad, contexto.ahora),
+    vencido: estaVencido(
+      { status: r.status, createdAt: r.createdAt, historial: r.historial, plazoAreaDias: r.area?.plazoMaximoDias ?? null },
+      contexto.plazoSinAreaDias,
+      contexto.ahora
+    ),
   };
 }
 

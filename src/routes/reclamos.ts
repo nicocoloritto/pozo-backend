@@ -5,6 +5,7 @@ import { AppError } from '../domain/errores';
 import { CATEGORIAS, NOTAS_MAX_CARACTERES, ORIGENES_UBICACION, SEVERIDADES } from '../domain/tipos';
 import { autenticar, exigirRol, usuarioActual } from '../middleware/autenticacion';
 import { aReclamoDto } from '../services/dto';
+import type { ReclamoConRelaciones } from '../services/dto';
 import * as reclamos from '../services/reclamos';
 
 // Reglas de un reclamo nuevo (equivalentes a pozo/mobile/lib/validarReclamo.ts). La pantalla
@@ -70,65 +71,70 @@ function idDe(req: Request): string {
   return id;
 }
 
+async function aDto(reclamo: ReclamoConRelaciones) {
+  return aReclamoDto(reclamo, await reclamos.contextoReclamoDto());
+}
+
 export const rutasReclamos = Router();
 rutasReclamos.use(autenticar);
 
 rutasReclamos.get('/', async (req, res) => {
   const lista = await reclamos.listar(usuarioActual(req), req.query.mios === '1');
-  res.json(lista.map(aReclamoDto));
+  const contexto = await reclamos.contextoReclamoDto();
+  res.json(lista.map((reclamo) => aReclamoDto(reclamo, contexto)));
 });
 
 rutasReclamos.get('/:id', async (req, res) => {
-  res.json(aReclamoDto(await reclamos.obtener(usuarioActual(req), idDe(req))));
+  res.json(await aDto(await reclamos.obtener(usuarioActual(req), idDe(req))));
 });
 
 // --- Vecinos ---
 
 rutasReclamos.post('/', exigirRol('vecino'), async (req, res) => {
   const reclamo = await reclamos.publicar(usuarioActual(req), nuevoReclamoSchema.parse(req.body));
-  res.status(201).json(aReclamoDto(reclamo));
+  res.status(201).json(await aDto(reclamo));
 });
 
 rutasReclamos.post('/:id/confirmaciones', exigirRol('vecino'), async (req, res) => {
-  res.json(aReclamoDto(await reclamos.confirmar(usuarioActual(req), idDe(req))));
+  res.json(await aDto(await reclamos.confirmar(usuarioActual(req), idDe(req))));
 });
 
 rutasReclamos.post('/:id/votos', exigirRol('vecino'), async (req, res) => {
   const { tipo } = votoSchema.parse(req.body);
-  res.json(aReclamoDto(await reclamos.votar(usuarioActual(req), idDe(req), tipo)));
+  res.json(await aDto(await reclamos.votar(usuarioActual(req), idDe(req), tipo)));
 });
 
 // --- Municipio ---
 
 rutasReclamos.post('/:id/tomar', exigirRol('admin'), async (req, res) => {
-  res.json(aReclamoDto(await reclamos.tomar(usuarioActual(req), idDe(req))));
+  res.json(await aDto(await reclamos.tomar(usuarioActual(req), idDe(req))));
 });
 
 rutasReclamos.post('/:id/reparacion', exigirRol('admin'), async (req, res) => {
-  res.json(aReclamoDto(await reclamos.pasarAReparacion(usuarioActual(req), idDe(req))));
+  res.json(await aDto(await reclamos.pasarAReparacion(usuarioActual(req), idDe(req))));
 });
 
 rutasReclamos.post('/:id/resolver', exigirRol('admin'), async (req, res) => {
   const { fotoResolucion } = resolverSchema.parse(req.body);
-  res.json(aReclamoDto(await reclamos.resolver(usuarioActual(req), idDe(req), fotoResolucion?.trim() ?? '')));
+  res.json(await aDto(await reclamos.resolver(usuarioActual(req), idDe(req), fotoResolucion?.trim() ?? '')));
 });
 
 rutasReclamos.post('/:id/rechazar', exigirRol('admin'), async (req, res) => {
   const { motivo } = rechazarSchema.parse(req.body);
-  res.json(aReclamoDto(await reclamos.rechazar(usuarioActual(req), idDe(req), motivo ?? '')));
+  res.json(await aDto(await reclamos.rechazar(usuarioActual(req), idDe(req), motivo ?? '')));
 });
 
 rutasReclamos.put('/:id/area', exigirRol('admin'), async (req, res) => {
   const { areaId } = areaSchema.parse(req.body);
-  res.json(aReclamoDto(await reclamos.asignarArea(usuarioActual(req), idDe(req), areaId)));
+  res.json(await aDto(await reclamos.asignarArea(usuarioActual(req), idDe(req), areaId)));
 });
 
 rutasReclamos.put('/:id/fecha-estimada', exigirRol('admin'), async (req, res) => {
   const { fechaEstimada } = fechaSchema.parse(req.body);
-  res.json(aReclamoDto(await reclamos.definirFechaEstimada(usuarioActual(req), idDe(req), new Date(fechaEstimada))));
+  res.json(await aDto(await reclamos.definirFechaEstimada(usuarioActual(req), idDe(req), new Date(fechaEstimada))));
 });
 
 rutasReclamos.post('/:id/notas', exigirRol('admin'), async (req, res) => {
   const { texto } = notaSchema.parse(req.body);
-  res.status(201).json(aReclamoDto(await reclamos.agregarNota(usuarioActual(req), idDe(req), texto)));
+  res.status(201).json(await aDto(await reclamos.agregarNota(usuarioActual(req), idDe(req), texto)));
 });

@@ -18,8 +18,9 @@ import type { Decision } from '../domain/maquinaEstados';
 import { CONFIRMACIONES_NECESARIAS } from '../domain/tipos';
 import type { Categoria, OrigenUbicacion, Severidad, TipoVoto } from '../domain/tipos';
 import { aReclamoDto } from './dto';
+import type { ContextoReclamoDto } from './dto';
 
-const INCLUIR = { historial: true, votos: true, notas: true } as const;
+const INCLUIR = { historial: true, votos: true, notas: true, area: true } as const;
 
 type Tx = Prisma.TransactionClient;
 
@@ -39,6 +40,11 @@ export type NuevoReclamo = {
   // El vecino vio el aviso de reclamo cercano y dice que es otro problema.
   publicarIgual?: boolean;
 };
+
+export async function contextoReclamoDto(tx: Tx = prisma): Promise<ContextoReclamoDto> {
+  const { _min } = await tx.area.aggregate({ _min: { plazoMaximoDias: true } });
+  return { plazoSinAreaDias: _min.plazoMaximoDias, ahora: new Date() };
+}
 
 async function buscar(tx: Tx, id: string) {
   const reclamo = await tx.reclamo.findUnique({ where: { id }, include: INCLUIR });
@@ -113,7 +119,7 @@ export async function publicar(autor: Usuario, input: NuevoReclamo) {
       const cercano = await buscarCercano(tx, input);
       if (cercano) {
         throw new AppError('RECLAMO_CERCANO', 'Ya hay un reclamo parecido a menos de 50 m.', {
-          reclamo: aReclamoDto(cercano.reclamo),
+          reclamo: aReclamoDto(cercano.reclamo, await contextoReclamoDto(tx)),
           distanciaMetros: Math.round(cercano.distanciaMetros),
         });
       }
