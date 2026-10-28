@@ -17,6 +17,8 @@ const registroSchema = z.object({
   password: z.string({ error: 'Falta la contraseña.' }).min(6, 'La contraseña debe tener al menos 6 caracteres.'),
 });
 
+const dniSchema = registroSchema.pick({ documentNumber: true, sex: true, birthDate: true });
+
 const loginSchema = z.object({
   email: z.string({ error: 'Falta el email.' }).min(1, 'Falta el email.'),
   password: z.string({ error: 'Falta la contraseña.' }).min(1, 'Falta la contraseña.'),
@@ -27,6 +29,13 @@ export const rutasAuth = Router();
 rutasAuth.post('/registro', async (req, res) => {
   const usuario = await auth.registrar(registroSchema.parse(req.body));
   res.status(201).json({ token: auth.firmarToken(usuario.id), user: aUsuarioDto(usuario) });
+});
+
+// Después de escanear el DNI, antes de pedir email y contraseña: si ya tiene cuenta, la app
+// manda a iniciar sesión.
+rutasAuth.post('/dni-registrado', async (req, res) => {
+  const { documentNumber, sex, birthDate } = dniSchema.parse(req.body);
+  res.json({ registrado: await auth.dniRegistrado(documentNumber, sex, birthDate) });
 });
 
 rutasAuth.post('/login', async (req, res) => {

@@ -38,6 +38,7 @@ const nuevoReclamoSchema = z
     address: z.string().max(300).optional(),
     neighborhood: z.string().max(100).optional(),
     comuna: z.number().int().min(1).max(99).optional(),
+    publicarIgual: z.boolean().optional(),
   })
   // (0, 0) es lo que devuelven muchos sistemas cuando no pudieron obtener un GPS: en el
   // golfo de Guinea, nunca un reclamo real.
