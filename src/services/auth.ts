@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import type { SignOptions } from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
+import type { Usuario } from '@prisma/client';
 import { config } from '../config';
 import { prisma } from '../db';
 import { AppError } from '../domain/errores';
@@ -94,4 +95,26 @@ export async function login(emailCrudo: string, password: string) {
     throw new AppError('WRONG_PASSWORD', 'Contraseña incorrecta');
   }
   return usuario;
+}
+
+// Anonimiza la cuenta en lugar de borrar la fila: los reclamos, votos e historial la
+// referencian y el municipio los sigue gestionando. Se vacían todos los datos personales (el
+// email y el DNI quedan libres para volver a registrarse) y se deja una contraseña que nadie
+// conoce. El token viejo deja de servir porque autenticar() rechaza las cuentas eliminadas.
+export async function eliminarCuenta(usuario: Usuario): Promise<void> {
+  await prisma.usuario.update({
+    where: { id: usuario.id },
+    data: {
+      email: `eliminada-${usuario.id}@pozo.invalid`,
+      passwordHash: await bcrypt.hash(randomUUID(), RONDAS_BCRYPT),
+      firstName: 'Cuenta eliminada',
+      lastName: null,
+      sex: null,
+      documentNumber: null,
+      dniNormalizado: null,
+      birthDate: null,
+      neighborhood: null,
+      eliminadaEn: new Date(),
+    },
+  });
 }

@@ -14,7 +14,8 @@ export type CodigoError =
   | 'EMAIL_TAKEN'
   | 'DNI_TAKEN'
   | 'EMAIL_NOT_FOUND'
-  | 'WRONG_PASSWORD';
+  | 'WRONG_PASSWORD'
+  | 'TOO_MANY_ATTEMPTS';
 
 // Código HTTP de cada error. Los códigos (no los mensajes) son el contrato con la app: son
 // los mismos que ya usan ReclamoError y AuthError en pozo/mobile/.
@@ -23,6 +24,7 @@ const STATUS: Record<CodigoError, number> = {
   UNAUTHENTICATED: 401,
   EMAIL_NOT_FOUND: 401,
   WRONG_PASSWORD: 401,
+  TOO_MANY_ATTEMPTS: 429,
   FORBIDDEN: 403,
   OWN_RECLAMO: 403,
   NOT_FOUND: 404,
@@ -42,6 +44,8 @@ export class AppError extends Error {
   status: number;
   // Datos extra que viajan junto al código y el mensaje (por ejemplo, el reclamo cercano).
   datos?: Record<string, unknown>;
+  // Para 429: cuántos segundos esperar. Sale también en el encabezado Retry-After.
+  reintentarEnSegundos?: number;
 
   constructor(code: CodigoError, message: string, datos?: Record<string, unknown>) {
     super(message);
