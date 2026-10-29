@@ -67,7 +67,6 @@
     "confirmaciones": ["vecino-50", "vecino-51", "vecino-52"],
     "createdAt": "2026-09-27T08:30:00-03:00",
     "areaAsignada": "servicios-publicos",
-    "fechaEstimada": "2026-10-15T00:00:00-03:00",
     "notas": [
       {
         "fecha": "2026-09-29T11:00:00-03:00",
@@ -148,7 +147,7 @@
     "municipioId": "caba",
     "category": "BrokenSidewalk",
     "severity": "Low",
-    "status": "Reportado",
+    "status": "ConfirmadoPorVecinos",
     "notes": "Baldosas flojas, riesgo de torcedura.",
     "photoUrl": "https://picsum.photos/id/1041/600/600",
     "photoKey": "vereda-1",
@@ -164,7 +163,8 @@
     "ultimoVoto": { "tipo": "yaNoEsta", "fecha": "2026-10-06T16:30:00-03:00" },
     "createdAt": "2026-09-22T11:15:00-03:00",
     "history": [
-      { "status": "Reportado", "description": "Ingresado", "createdAt": "2026-09-22T11:15:00-03:00", "autor": "vecino-3" }
+      { "status": "Reportado", "description": "Ingresado", "createdAt": "2026-09-22T11:15:00-03:00", "autor": "vecino-3" },
+      { "status": "ConfirmadoPorVecinos", "description": "Confirmado por vecinos", "createdAt": "2026-09-23T10:00:00-03:00" }
     ]
   },
   {
@@ -273,12 +273,13 @@
     "comuna": 14,
     "confirmaciones": ["vecino-1", "vecino-3", "vecino-60"],
     "createdAt": "2026-05-10T09:00:00-03:00",
+    "motivoRechazoTipo": "No requiere arreglo",
     "motivoRechazo": "La luminaria ya estaba reparada al momento de la inspección.",
     "history": [
       { "status": "Reportado", "description": "Ingresado", "createdAt": "2026-05-10T09:00:00-03:00", "autor": "vecino-2" },
       { "status": "ConfirmadoPorVecinos", "description": "Confirmado por 3 vecinos", "createdAt": "2026-05-12T09:00:00-03:00" },
       { "status": "EnviadoAlMunicipio", "description": "Tomado por el municipio", "createdAt": "2026-05-15T09:00:00-03:00", "autor": "admin-caba" },
-      { "status": "Rechazado", "description": "Rechazado: La luminaria ya estaba reparada al momento de la inspección.", "createdAt": "2026-05-16T09:00:00-03:00", "autor": "admin-caba" }
+      { "status": "Rechazado", "description": "Rechazado: No requiere arreglo: La luminaria ya estaba reparada al momento de la inspección.", "createdAt": "2026-05-16T09:00:00-03:00", "autor": "admin-caba" }
     ]
   },
   {
@@ -399,7 +400,6 @@
     ],
     "createdAt": "2026-08-20T07:30:00-03:00",
     "areaAsignada": "arbolado",
-    "fechaEstimada": "2026-10-10T00:00:00-03:00",
     "notas": [
       {
         "fecha": "2026-08-25T11:00:00-03:00",
@@ -576,6 +576,7 @@
       "vecino-52"
     ],
     "createdAt": "2026-09-05T09:50:00-03:00",
+    "motivoRechazoTipo": "No corresponde al municipio",
     "motivoRechazo": "El corte lo causó una obra de la empresa distribuidora; no es competencia del municipio.",
     "history": [
       {
@@ -597,7 +598,7 @@
       },
       {
         "status": "Rechazado",
-        "description": "Rechazado: El corte lo causó una obra de la empresa distribuidora; no es competencia del municipio.",
+        "description": "Rechazado: No corresponde al municipio: El corte lo causó una obra de la empresa distribuidora; no es competencia del municipio.",
         "createdAt": "2026-09-11T09:00:00-03:00",
         "autor": "admin-caba"
       }

@@ -11,16 +11,19 @@ import {
   decidirPasarAReparacion,
   decidirRechazar,
   decidirResolver,
+  decidirResolverPorVecinos,
   decidirTomar,
   esEstadoFinal,
+  exigirEnReparacion,
+  exigirFechaNoPasada,
 } from '../domain/maquinaEstados';
 import type { Decision } from '../domain/maquinaEstados';
-import { CONFIRMACIONES_NECESARIAS } from '../domain/tipos';
+import { CONFIRMACIONES_NECESARIAS, DIAS_CERRADO_EN_MAPA } from '../domain/tipos';
 import type { Categoria, OrigenUbicacion, Severidad, TipoVoto } from '../domain/tipos';
 import { aReclamoDto } from './dto';
 import type { ContextoReclamoDto } from './dto';
 
-const INCLUIR = { historial: true, votos: true, notas: true, area: true } as const;
+const INCLUIR = { historial: true, votos: true, notas: true } as const;
 
 type Tx = Prisma.TransactionClient;
 
@@ -41,9 +44,8 @@ export type NuevoReclamo = {
   publicarIgual?: boolean;
 };
 
-export async function contextoReclamoDto(tx: Tx = prisma): Promise<ContextoReclamoDto> {
-  const { _min } = await tx.area.aggregate({ _min: { plazoMaximoDias: true } });
-  return { plazoSinAreaDias: _min.plazoMaximoDias, ahora: new Date() };
+export function contextoReclamoDto(): ContextoReclamoDto {
+  return { ahora: new Date() };
 }
 
 async function buscar(tx: Tx, id: string) {
@@ -71,12 +73,18 @@ async function generarCaseNumber(tx: Tx): Promise<string> {
 // --- Consultas ------------------------------------------------------------------------
 
 // Del más nuevo al más viejo. Un admin ve solo los de su municipio; un vecino, todos los
-// del mapa (o solo los suyos con `soloMios`).
-export async function listar(usuario: Usuario, soloMios: boolean) {
+// del mapa (o solo los suyos con `soloMios`). Con `paraMapa` se omiten los cerrados hace más
+// de DIAS_CERRADO_EN_MAPA días (el cierre es la entrada del historial con ese estado).
+export async function listar(usuario: Usuario, soloMios: boolean, paraMapa = false) {
+  const cierres = { in: ['Resuelto', 'Rechazado'] };
+  const corte = new Date(Date.now() - DIAS_CERRADO_EN_MAPA * 24 * 60 * 60 * 1000);
   return prisma.reclamo.findMany({
     where: {
       ...(usuario.rol === 'admin' ? { municipioId: usuario.municipioId ?? '' } : {}),
       ...(soloMios ? { autorId: usuario.id } : {}),
+      ...(paraMapa
+        ? { NOT: { status: cierres, historial: { none: { status: cierres, createdAt: { gte: corte } } } } }
+        : {}),
     },
     include: INCLUIR,
     orderBy: { createdAt: 'desc' },
@@ -119,7 +127,7 @@ export async function publicar(autor: Usuario, input: NuevoReclamo) {
       const cercano = await buscarCercano(tx, input);
       if (cercano) {
         throw new AppError('RECLAMO_CERCANO', 'Ya hay un reclamo parecido a menos de 50 m.', {
-          reclamo: aReclamoDto(cercano.reclamo, await contextoReclamoDto(tx)),
+          reclamo: aReclamoDto(cercano.reclamo, contextoReclamoDto()),
           distanciaMetros: Math.round(cercano.distanciaMetros),
         });
       }
@@ -176,7 +184,7 @@ async function registrarSigue(tx: Tx, reclamoId: string, vecinoId: string, ahora
             historial: {
               create: {
                 status: 'ConfirmadoPorVecinos',
-                description: `Confirmado por ${CONFIRMACIONES_NECESARIAS} vecinos`,
+                description: 'Confirmado por vecinos',
                 createdAt: ahora,
               },
             },
@@ -206,8 +214,8 @@ export async function confirmar(vecino: Usuario, id: string) {
 
 // Voto "¿Sigue ahí?" estilo Waze. Un voto por vecino: "sigue" o "yaNoEsta", nunca los dos;
 // votar lo otro cambia el voto y tocar el mismo otra vez lo saca. El autor no puede votar
-// "sigue" (sí "yaNoEsta"). "yaNoEsta" no cambia el estado: lo cierra el municipio. Sacar un
-// voto no vuelve el estado atrás.
+// "sigue" (sí "yaNoEsta"). Al llegar a VOTOS_YA_NO_ESTA_NECESARIOS "yaNoEsta" el reclamo pasa
+// solo a Resuelto. Sacar un voto no vuelve el estado atrás.
 export async function votar(vecino: Usuario, id: string, tipo: TipoVoto) {
   return prisma.$transaction(async (tx) => {
     const reclamo = await buscar(tx, id);
@@ -229,7 +237,19 @@ export async function votar(vecino: Usuario, id: string, tipo: TipoVoto) {
         create: { reclamoId: id, vecinoId: vecino.id, tipo },
         update: { tipo },
       });
-      await tx.reclamo.update({ where: { id }, data: { ultimoVotoTipo: 'yaNoEsta', ultimoVotoFecha: new Date() } });
+      const ahora = new Date();
+      const yaNoEsta = await tx.voto.count({ where: { reclamoId: id, tipo: 'yaNoEsta' } });
+      const resuelto = decidirResolverPorVecinos(reclamo, yaNoEsta);
+      await tx.reclamo.update({
+        where: { id },
+        data: {
+          ultimoVotoTipo: 'yaNoEsta',
+          ultimoVotoFecha: ahora,
+          ...(resuelto
+            ? { status: resuelto.status, historial: { create: { status: resuelto.status, description: resuelto.description, createdAt: ahora } } }
+            : {}),
+        },
+      });
     }
     return buscar(tx, id);
   });
@@ -241,7 +261,7 @@ export async function votar(vecino: Usuario, id: string, tipo: TipoVoto) {
 // el próximo estado (o que tire AppError si no vale en el estado actual), aplica los campos
 // extra y deja constancia en el historial con fecha y autor.
 
-async function transicionar(admin: Usuario, id: string, decidir: (reclamo: { status: string; category: string; areaAsignada: string | null }) => Decision) {
+async function transicionar(admin: Usuario, id: string, decidir: (reclamo: { status: string; category: string }) => Decision) {
   return prisma.$transaction(async (tx) => {
     const reclamo = await buscar(tx, id);
     exigirMismoMunicipio(admin, reclamo.municipioId);
@@ -259,31 +279,30 @@ async function transicionar(admin: Usuario, id: string, decidir: (reclamo: { sta
   });
 }
 
-export const tomar = (admin: Usuario, id: string) => transicionar(admin, id, decidirTomar);
-export const pasarAReparacion = (admin: Usuario, id: string) => transicionar(admin, id, decidirPasarAReparacion);
+// Cada categoría está en una sola área: esa es la que se asigna al tomar.
+export async function tomar(admin: Usuario, id: string) {
+  const areas = await prisma.area.findMany();
+  const areaDe = (category: string) =>
+    areas.find((a) => (JSON.parse(a.categorias) as string[]).includes(category))?.id;
+  return transicionar(admin, id, (reclamo) => decidirTomar(reclamo, areaDe(reclamo.category)));
+}
+export const pasarAReparacion = (admin: Usuario, id: string, fechaEstimada: Date) =>
+  transicionar(admin, id, (reclamo) => decidirPasarAReparacion(reclamo, fechaEstimada));
 export const resolver = (admin: Usuario, id: string, fotoResolucion: string) =>
   transicionar(admin, id, (reclamo) => decidirResolver(reclamo, fotoResolucion));
-export const rechazar = (admin: Usuario, id: string, motivo: string) =>
-  transicionar(admin, id, (reclamo) => decidirRechazar(reclamo, motivo));
+export const rechazar = (admin: Usuario, id: string, motivo: string, detalle: string) =>
+  transicionar(admin, id, (reclamo) => decidirRechazar(reclamo, motivo, detalle));
 
-async function editarAbierto(admin: Usuario, id: string, mensajeCerrado: string, data: Prisma.ReclamoUpdateInput) {
+export async function definirFechaEstimada(admin: Usuario, id: string, fechaEstimada: Date) {
   return prisma.$transaction(async (tx) => {
     const reclamo = await buscar(tx, id);
     exigirMismoMunicipio(admin, reclamo.municipioId);
-    if (esEstadoFinal(reclamo.status)) throw new AppError('INVALID_TRANSITION', mensajeCerrado);
-    await tx.reclamo.update({ where: { id }, data });
+    exigirEnReparacion(reclamo);
+    exigirFechaNoPasada(fechaEstimada);
+    await tx.reclamo.update({ where: { id }, data: { fechaEstimada } });
     return buscar(tx, id);
   });
 }
-
-export async function asignarArea(admin: Usuario, id: string, areaId: string) {
-  const area = await prisma.area.findUnique({ where: { id: areaId } });
-  if (!area) throw new AppError('INVALID_INPUT', 'El área no existe.');
-  return editarAbierto(admin, id, 'No se puede asignar un área a un reclamo cerrado', { area: { connect: { id: areaId } } });
-}
-
-export const definirFechaEstimada = (admin: Usuario, id: string, fechaEstimada: Date) =>
-  editarAbierto(admin, id, 'No se puede definir una fecha estimada en un reclamo cerrado', { fechaEstimada });
 
 export async function agregarNota(admin: Usuario, id: string, texto: string) {
   const limpio = texto.trim();
