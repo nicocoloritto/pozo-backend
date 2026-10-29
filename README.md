@@ -148,32 +148,4 @@ de otro). Cada transición queda en el historial con fecha y autor.
 cada "ya no está" y suma 2 por cada día desde la creación; nunca baja de 0. Un reclamo está atrasado
 si tiene fecha estimada, pasó un día completo desde esa fecha y no está cerrado.
 
-## Estructura
 
-```
-prisma/schema.prisma   modelo de datos
-prisma/seed.ts         carga prisma/data/*.json
-src/domain/            reglas de negocio puras (máquina de estados, prioridad, distancia, tipos, errores)
-src/services/          casos de uso sobre la base (reclamos, auth, estadísticas) y conversión a JSON
-src/routes/            rutas HTTP y validación de entradas con zod
-src/middleware/        autenticación, límite de intentos y manejo de errores
-tests/                 reglas de negocio y API completa (supertest)
-```
-
-## Tests
-
-`npm test` corre 79 tests con Vitest en tres archivos: `maquinaEstados.test.ts` y
-`prioridad.test.ts` (reglas puras) y `api.test.ts` (la API completa con supertest sobre una base
-SQLite propia). El workflow de GitHub Actions (`.github/workflows/ci.yml`) corre typecheck, build,
-tests y `npm audit` en cada push a `main` y en cada pull request.
-
-## Decisiones técnicas
-
-- **Las reglas viven en el servidor.** `src/domain/maquinaEstados.ts` y `src/domain/tipos.ts` tienen
-  una copia en la app (`mobile/lib/maquinaEstados.ts` y `mobile/types/reclamo.ts`). La app solo
-  valida lo mínimo para avisar rápido; si una regla cambia, hay que cambiar las dos copias.
-- **Transacciones.** Publicar, confirmar, votar y cada transición corren en una transacción.
-- **SQLite sin enums.** Estados y categorías son texto y se validan en el borde.
-- **Duplicados.** El chequeo depende de que SQLite ejecute las transacciones de a una; con Postgres
-  habría que agregar un lock.
-- **Sin desplegar.** Hoy corre solo en local.
