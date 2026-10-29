@@ -1,14 +1,16 @@
 # Pozo · API
 
-Backend de Pozo (Sprint 2): Express + Prisma + SQLite, en TypeScript. Reemplaza al
-almacenamiento local de la app, que vive en el repo [pozo](https://github.com/nicocoloritto/pozo)
-(`mobile/services/`), con la misma forma de datos, para que conectarla no obligue a tocar las
-pantallas.
+Backend de Pozo: Express + Prisma + SQLite, en TypeScript. Guarda los reclamos, las cuentas y las
+fotos, y aplica las reglas del circuito de estados. La app móvil vive en el repo
+[pozo](https://github.com/nicocoloritto/pozo) y habla con esta API; qué hace cada pantalla y por qué
+se decidió cada regla está explicado ahí
+([diseño funcional](https://github.com/nicocoloritto/pozo/blob/dev/docs/diseno-funcional.md) y
+[decisiones](https://github.com/nicocoloritto/pozo/blob/dev/docs/decisiones.md)).
 
 ## Cómo correrlo
 
-Requiere Node 20.19 o más nuevo. Usa Prisma 7 con el adaptador `better-sqlite3`, que trae binarios
-ya compilados para Windows, macOS y Linux.
+Requiere Node 20.19 o más nuevo (lo pide Prisma 7). La base es SQLite con el adaptador
+`better-sqlite3`, que trae binarios ya compilados para Windows, macOS y Linux.
 
 ```bash
 git clone https://github.com/nicocoloritto/pozo-backend.git
@@ -19,92 +21,159 @@ npm run setup            # genera el cliente de Prisma, crea la base y carga los
 npm run dev              # http://localhost:3000
 ```
 
-```bash
-npm test                 # 66 tests, usan su propia base (test.db)
-npm run typecheck
-npm run build && npm start
-```
 
-`npm run db:reset` borra la base de desarrollo y vuelve a cargar los datos de prueba.
+| Comando | Qué hace |
+|---|---|
+| `npm run dev` | Servidor con recarga automática. |
+| `npm run db:reset` | Borra la base de desarrollo y vuelve a cargar los datos de prueba. |
 
-Después de traer cambios del repo (`git pull`), corré `npm run setup` otra vez: regenera el
-cliente de Prisma y actualiza la base si el schema cambió. Sin eso, los tests pueden fallar con
-errores como "Property 'barrio' does not exist".
 
-Los datos de prueba están en `prisma/data/*.json` y los carga `npm run setup`: las cuentas
-(`vecino1@pozo.com`, `vecino2@pozo.com`, `vecino3@pozo.com`, `admin@caba.gob.ar`, contraseña
-`123456`) y los 17 reclamos de ejemplo. Los vecinos que figuran como confirmadores en esos
-reclamos pero no tienen cuenta de prueba se crean como cuentas inactivas (`@seed.pozo.invalid`).
+
+### Datos de prueba
+
+Salen de `prisma/data/*.json`: 1 municipio (CABA), sus barrios y áreas, cuatro cuentas y 17
+reclamos de ejemplo. Todas las contraseñas son `123456`.
+
+| Email | Rol |
+|---|---|
+| `vecino1@pozo.com`, `vecino2@pozo.com`, `vecino3@pozo.com` | Vecino |
+| `admin@caba.gob.ar` | Municipio (CABA) |
+
+Los vecinos que figuran en los reclamos de ejemplo pero no tienen cuenta de prueba se crean como
+cuentas que no pueden iniciar sesión (`@seed.pozo.invalid`), para respetar las claves foráneas.
 
 ## Autenticación
 
-`POST /auth/registro` y `POST /auth/login` devuelven `{ token, user }`. El resto de las rutas
-piden `Authorization: Bearer <token>` (JWT de 7 días). El rol sale siempre de la base, nunca
-del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del token.
+`POST /auth/registro` y `POST /auth/login` devuelven `{ token, user }`. El resto de las rutas pide
+`Authorization: Bearer <token>` (JWT de 7 días). El rol y el usuario salen siempre de la base, nunca
+del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del token. Si la cuenta se
+elimina, el token deja de servir. Los admin no se registran por la API: existen solo como dato de
+prueba.
+
+### Límite de intentos
+
+Se cuenta en la memoria del servidor, en ventanas de 15 minutos. Al pasarse responde
+`429 TOO_MANY_ATTEMPTS` con el encabezado `Retry-After`.
+
+| Dónde | Límite | Qué cuenta |
+|---|---|---|
+| `POST /auth/login`, por cuenta | 5 | Fallos (email inexistente o contraseña incorrecta). Un login correcto borra el conteo de esa cuenta. |
+| `POST /auth/login`, por IP | 20 | Fallos. |
+| `POST /auth/dni-registrado`, por IP | 30 | Todos los pedidos. |
+
+`POST /auth/registro` no tiene límite de intentos. Como el conteo vive en memoria, se reinicia con
+el servidor y no sirve si hay varias instancias.
 
 ## Rutas
 
+Los errores salen siempre como `{ "error": { "code", "message" } }`. Los códigos
+(`OWN_RECLAMO`, `ALREADY_CONFIRMED`, `INVALID_TRANSITION`, `DNI_TAKEN`, `TOO_MANY_ATTEMPTS`…) están en
+`src/domain/errores.ts`, junto con su código HTTP, y son los que usa la app. `GET /health` responde
+`{ ok: true }` y no pide token.
+
 | Método y ruta | Quién | Qué hace |
 |---|---|---|
-| `POST /auth/registro` | público | Crea una cuenta de vecino con los datos del DNI. Un DNI, una cuenta. |
+| `POST /auth/registro` | público | Crea una cuenta de vecino con los datos del DNI. Un DNI, una cuenta (`DNI_TAKEN`); un email, una cuenta (`EMAIL_TAKEN`). |
 | `POST /auth/dni-registrado` | público | `{ documentNumber, sex, birthDate }` → `{ registrado }`. `true` solo si coinciden los tres. |
-| `POST /auth/login` | público | Inicia sesión. Tras 5 fallos seguidos en una cuenta, o 20 desde una misma IP, responde `429 TOO_MANY_ATTEMPTS` (con `Retry-After`) durante 15 minutos. |
+| `POST /auth/login` | público | Inicia sesión. |
 | `GET /auth/me` | autenticado | Usuario de la sesión. |
 | `DELETE /auth/cuenta` | vecino | Elimina la cuenta propia: se borran los datos personales y el token deja de servir. Los reclamos quedan, sin nombre. El email y el DNI se pueden volver a registrar. |
 | `GET /municipios`, `GET /areas` | autenticado | Catálogos. |
-| `GET /municipios/:id/barrios` | autenticado | Barrios del municipio, por comuna y nombre. Un admin solo consulta el suyo. |
-| `GET /barrios/:id/estadisticas` | autenticado | Totales, % resuelto, días promedio, por categoría, por estado y últimos 6 meses, calculados con los reclamos del barrio. |
+| `GET /municipios/:id/barrios` | autenticado | Barrios del municipio, por comuna y nombre. |
+| `GET /barrios/:id/estadisticas` | autenticado | Totales, % resuelto, días promedio, por categoría, por estado y últimos 6 meses. |
 | `GET /municipios/:id/ranking` | autenticado | Barrios ordenados por % de resolución (a igual %, antes los que tienen reclamos). |
 | `GET /municipios/:id/evolucion` | autenticado | Reclamos por mes del municipio en los últimos 6 meses. |
-| `GET /reclamos` | autenticado | Lista del más nuevo al más viejo. `?mios=1` deja solo los propios. `?mapa=1` (solo para el mapa) omite los resueltos o rechazados hace más de 7 días. El municipio ve solo los suyos. |
+| `GET /reclamos` | autenticado | Del más nuevo al más viejo. `?mios=1` deja solo los propios. `?mapa=1` omite los resueltos o rechazados hace más de 7 días. |
 | `GET /reclamos/:id` | autenticado | Detalle con historial, votos y notas. |
-| | | Todo reclamo trae además `prioridad` y `atrasado` (tiene fecha estimada ya pasada y no está cerrado), calculados en cada respuesta (`src/domain/prioridad.ts`). |
-| `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). Si hay uno abierto de la misma categoría a menos de 50 m responde `409 RECLAMO_CERCANO` con `reclamo` y `distanciaMetros`, salvo con `publicarIgual: true`. |
-| `POST /reclamos/:id/confirmaciones` | vecino | "Sigue ahí". Con 1 (de otro vecino) pasa a `ConfirmadoPorVecinos`. |
-| `POST /reclamos/:id/votos` | vecino | `{ "tipo": "sigue" \| "yaNoEsta" }`. Un voto por vecino; repetirlo lo saca. Con 10 `yaNoEsta` el reclamo abierto pasa solo a `Resuelto`. |
-| `POST /reclamos/:id/tomar` | municipio | Pasa a `EnviadoAlMunicipio` y le asigna el área de su categoría. Las categorías peligrosas se toman sin confirmaciones. |
-| `PUT /reclamos/:id/fecha-estimada` | municipio | `{ "fechaEstimada": "2026-12-01" }`. Solo en `EnReparacion`; no puede ser anterior a hoy. |
-| `POST /reclamos/:id/notas` | municipio | `{ "texto" }` (hasta 280 caracteres). |
-| `POST /reclamos/:id/reparacion` | municipio | `{ "fechaEstimada" }` obligatoria y no anterior a hoy. Pasa a `EnReparacion`. |
+| `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). |
+| `POST /reclamos/:id/confirmaciones` | vecino | "Sigue ahí". |
+| `POST /reclamos/:id/votos` | vecino | `{ "tipo": "sigue" \| "yaNoEsta" }`. |
+| `POST /reclamos/:id/tomar` | municipio | Pasa a `EnviadoAlMunicipio` y asigna el área de su categoría. |
+| `POST /reclamos/:id/reparacion` | municipio | `{ "fechaEstimada" }` obligatoria. Pasa a `EnReparacion`. |
+| `PUT /reclamos/:id/fecha-estimada` | municipio | `{ "fechaEstimada": "2026-12-01" }`. Cambia la fecha de un reclamo en reparación. |
 | `POST /reclamos/:id/resolver` | municipio | `{ "fotoResolucion" }` obligatoria. Pasa a `Resuelto`. |
-| `POST /reclamos/:id/rechazar` | municipio | `{ "motivo", "detalle"? }`. `motivo` es uno de "No corresponde al municipio", "No requiere arreglo" o "Duplicado"; se guarda en `motivoRechazoTipo` y el `detalle` en `motivoRechazo`. Pasa a `Rechazado`. |
-| `POST /fotos` | autenticado | Sube una imagen (`multipart`, campo `foto`, JPG/PNG/WebP/HEIC, hasta 8 MB). Devuelve `{ url }` para usar como `photoUrl` o `fotoResolucion`. |
+| `POST /reclamos/:id/rechazar` | municipio | `{ "motivo", "detalle"? }`. Pasa a `Rechazado`. |
+| `POST /reclamos/:id/notas` | municipio | `{ "texto" }`, hasta 280 caracteres. |
+| `POST /fotos` | autenticado | Sube una imagen (`multipart`, campo `foto`, JPG, PNG, WebP o HEIC, hasta 8 MB). Devuelve `{ url }` para usar como `photoUrl` o `fotoResolucion`. Las fotos se sirven desde `/uploads`. |
 
-Los errores salen siempre como `{ "error": { "code", "message" } }`. Los códigos
-(`OWN_RECLAMO`, `ALREADY_CONFIRMED`, `INVALID_TRANSITION`, `DNI_TAKEN`…) son los mismos que
-ya usan `ReclamoError` y `AuthError` en la app.
+## Reglas de negocio
+
+Las reglas puras están en `src/domain/` y los casos de uso en `src/services/reclamos.ts`.
+
+**Límites de votos.** Están en `src/domain/tipos.ts`:
+
+- `CONFIRMACIONES_NECESARIAS = 1`. Es el valor de la demo: con una sola confirmación de otro vecino
+  el reclamo pasa de `Reportado` a `ConfirmadoPorVecinos`, y así el flujo se puede mostrar con pocas
+  cuentas. El valor pensado para uso real es **10**. Para cambiarlo hay que editar la constante en
+  este archivo y su copia en `pozo/mobile/types/reclamo.ts`; si los valores no coinciden, la app
+  muestra un contador distinto del que aplica el servidor.
+- `VOTOS_YA_NO_ESTA_NECESARIOS = 10`. Con 10 votos "ya no está" un reclamo abierto pasa solo a
+  `Resuelto`, sin foto, y el historial lo deja como "Resuelto por los vecinos".
+
+**Publicar.**
+
+- Exige foto, categoría, severidad y coordenadas válidas (no `0, 0`). Las notas tienen hasta 280
+  caracteres. El municipio tiene que existir.
+- Si hay un reclamo abierto de la misma categoría a menos de 50 m, de cualquier autor, responde
+  `409 RECLAMO_CERCANO` con ese `reclamo` y la `distanciaMetros`. Con `publicarIgual: true` publica
+  igual. El chequeo y el alta corren en la misma transacción.
+- Le asigna un número de expediente `EXP-AA-NNNNN`, que también es su id.
+
+**Votos.**
+
+- Un voto por vecino y por reclamo: o "sigue" o "yaNoEsta". Votar lo otro cambia el voto; repetir el
+  mismo lo saca. Sacar un voto no vuelve el estado atrás. La restricción única `(reclamo, vecino)`
+  impide votar dos veces aunque lleguen dos pedidos a la vez.
+- El autor no puede votar "sigue" en su propio reclamo (`OWN_RECLAMO`); sí puede votar "yaNoEsta".
+  Confirmar dos veces da `ALREADY_CONFIRMED`. Un reclamo cerrado no se vota.
+- La confirmación solo cambia el estado si el reclamo sigue en `Reportado`. "Ya no está" resuelve
+  desde cualquier estado abierto.
+
+**Gestión del municipio** (`src/domain/maquinaEstados.ts`).
+
+| Acción | Desde | Hacia | Requisitos |
+|---|---|---|---|
+| Tomar | `ConfirmadoPorVecinos`, o `Reportado` si la categoría es peligrosa | `EnviadoAlMunicipio` | Hay un área para la categoría, que se asigna sola. |
+| Pasar a reparación | `EnviadoAlMunicipio` | `EnReparacion` | Fecha estimada, no anterior a hoy. |
+| Cambiar fecha | `EnReparacion` | (igual) | La misma validación de fecha. |
+| Resolver | `EnReparacion` | `Resuelto` | Foto del "después". |
+| Rechazar | cualquier estado abierto | `Rechazado` | Motivo de la lista: "No corresponde al municipio", "No requiere arreglo" o "Duplicado". El motivo va en `motivoRechazoTipo` y el detalle opcional en `motivoRechazo`. |
+
+Son categorías peligrosas poste caído, árbol caído, corte de luz o agua y semáforo. `Resuelto` y
+`Rechazado` son finales. Un admin solo ve y gestiona los reclamos de su municipio (`FORBIDDEN` si es
+de otro). Cada transición queda en el historial con fecha y autor.
+
+**Prioridad y atrasado.** Todo reclamo trae `prioridad` y `atrasado`, calculados en cada respuesta
+(`src/domain/prioridad.ts`) y no guardados. La prioridad suma 10 por cada "sigue ahí", resta 10 por
+cada "ya no está" y suma 2 por cada día desde la creación; nunca baja de 0. Un reclamo está atrasado
+si tiene fecha estimada, pasó un día completo desde esa fecha y no está cerrado.
 
 ## Estructura
 
 ```
 prisma/schema.prisma   modelo de datos
 prisma/seed.ts         carga prisma/data/*.json
-src/domain/            reglas de negocio puras (máquina de estados, tipos, errores)
-src/services/          casos de uso sobre la base (reclamos, auth) y conversión a JSON
+src/domain/            reglas de negocio puras (máquina de estados, prioridad, distancia, tipos, errores)
+src/services/          casos de uso sobre la base (reclamos, auth, estadísticas) y conversión a JSON
 src/routes/            rutas HTTP y validación de entradas con zod
-src/middleware/        autenticación y manejo de errores
+src/middleware/        autenticación, límite de intentos y manejo de errores
 tests/                 reglas de negocio y API completa (supertest)
 ```
 
-## Decisiones
+## Tests
 
-- **Las reglas viven en el servidor.** `src/domain/maquinaEstados.ts` es la misma lógica que
-  `mobile/lib/maquinaEstados.ts` del repo pozo. Mientras la app no use la API, hay dos copias: si una
-  cambia, hay que cambiar la otra.
-- **Transacciones.** Confirmar, votar y cada transición corren en una transacción, y la
-  restricción única `(reclamo, vecino)` de los votos es la que impide votar dos veces aunque
-  lleguen dos pedidos a la vez.
+`npm test` corre 79 tests con Vitest en tres archivos: `maquinaEstados.test.ts` y
+`prioridad.test.ts` (reglas puras) y `api.test.ts` (la API completa con supertest sobre una base
+SQLite propia). El workflow de GitHub Actions (`.github/workflows/ci.yml`) corre typecheck, build,
+tests y `npm audit` en cada push a `main` y en cada pull request.
+
+## Decisiones técnicas
+
+- **Las reglas viven en el servidor.** `src/domain/maquinaEstados.ts` y `src/domain/tipos.ts` tienen
+  una copia en la app (`mobile/lib/maquinaEstados.ts` y `mobile/types/reclamo.ts`). La app solo
+  valida lo mínimo para avisar rápido; si una regla cambia, hay que cambiar las dos copias.
+- **Transacciones.** Publicar, confirmar, votar y cada transición corren en una transacción.
 - **SQLite sin enums.** Estados y categorías son texto y se validan en el borde.
-- **Aislamiento por municipio.** Un admin no ve ni gestiona reclamos de otro municipio.
-- **Prioridad y atrasado en el servidor.** La app solo los muestra. No se guardan porque cambian
-  con los días.
-- **Duplicados y DNI ya registrado.** Las reglas y el porqué están en
-  [pozo/docs/decisiones.md](https://github.com/nicocoloritto/pozo/blob/dev/docs/decisiones.md).
-  El chequeo de duplicados corre en la misma transacción que el alta y depende de que SQLite
-  ejecute las transacciones de a una: con Postgres hay que agregar un lock.
-
-## Pendiente
-
-- Desplegar: hoy corre solo en local. En producción `JWT_SECRET` es obligatorio.
-- El límite de intentos vive en la memoria del servidor: se reinicia con él y no sirve si algún
-  día corren varias instancias (habría que guardarlo en la base).
+- **Duplicados.** El chequeo depende de que SQLite ejecute las transacciones de a una; con Postgres
+  habría que agregar un lock.
+- **Sin desplegar.** Hoy corre solo en local.
