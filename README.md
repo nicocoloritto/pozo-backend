@@ -56,19 +56,18 @@ del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del to
 | `GET /barrios/:id/estadisticas` | autenticado | Totales, % resuelto, días promedio, por categoría, por estado y últimos 6 meses, calculados con los reclamos del barrio. |
 | `GET /municipios/:id/ranking` | autenticado | Barrios ordenados por % de resolución (a igual %, antes los que tienen reclamos). |
 | `GET /municipios/:id/evolucion` | autenticado | Reclamos por mes del municipio en los últimos 6 meses. |
-| `GET /reclamos` | autenticado | Lista del más nuevo al más viejo. `?mios=1` deja solo los propios. El municipio ve solo los suyos. |
+| `GET /reclamos` | autenticado | Lista del más nuevo al más viejo. `?mios=1` deja solo los propios. `?mapa=1` (solo para el mapa) omite los resueltos o rechazados hace más de 7 días. El municipio ve solo los suyos. |
 | `GET /reclamos/:id` | autenticado | Detalle con historial, votos y notas. |
-| | | Todo reclamo trae además `prioridad`, `desglosePrioridad` (`[{ motivo, puntos }]`) y `vencido`, calculados en cada respuesta (`src/domain/prioridad.ts`). |
+| | | Todo reclamo trae además `prioridad` y `atrasado` (tiene fecha estimada ya pasada y no está cerrado), calculados en cada respuesta (`src/domain/prioridad.ts`). |
 | `POST /reclamos` | vecino | Publica un reclamo (queda `Reportado`). Si hay uno abierto de la misma categoría a menos de 50 m responde `409 RECLAMO_CERCANO` con `reclamo` y `distanciaMetros`, salvo con `publicarIgual: true`. |
-| `POST /reclamos/:id/confirmaciones` | vecino | "Sigue ahí". Con 3 pasa a `ConfirmadoPorVecinos`. |
-| `POST /reclamos/:id/votos` | vecino | `{ "tipo": "sigue" \| "yaNoEsta" }`. Un voto por vecino; repetirlo lo saca. |
-| `POST /reclamos/:id/tomar` | municipio | Pasa a `EnviadoAlMunicipio`. Las categorías peligrosas se toman sin confirmaciones. |
-| `PUT /reclamos/:id/area` | municipio | `{ "areaId" }` |
-| `PUT /reclamos/:id/fecha-estimada` | municipio | `{ "fechaEstimada": "2026-12-01" }` |
+| `POST /reclamos/:id/confirmaciones` | vecino | "Sigue ahí". Con 1 (de otro vecino) pasa a `ConfirmadoPorVecinos`. |
+| `POST /reclamos/:id/votos` | vecino | `{ "tipo": "sigue" \| "yaNoEsta" }`. Un voto por vecino; repetirlo lo saca. Con 10 `yaNoEsta` el reclamo abierto pasa solo a `Resuelto`. |
+| `POST /reclamos/:id/tomar` | municipio | Pasa a `EnviadoAlMunicipio` y le asigna el área de su categoría. Las categorías peligrosas se toman sin confirmaciones. |
+| `PUT /reclamos/:id/fecha-estimada` | municipio | `{ "fechaEstimada": "2026-12-01" }`. Solo en `EnReparacion`; no puede ser anterior a hoy. |
 | `POST /reclamos/:id/notas` | municipio | `{ "texto" }` (hasta 280 caracteres). |
-| `POST /reclamos/:id/reparacion` | municipio | Pasa a `EnReparacion` (necesita área). |
+| `POST /reclamos/:id/reparacion` | municipio | `{ "fechaEstimada" }` obligatoria y no anterior a hoy. Pasa a `EnReparacion`. |
 | `POST /reclamos/:id/resolver` | municipio | `{ "fotoResolucion" }` obligatoria. Pasa a `Resuelto`. |
-| `POST /reclamos/:id/rechazar` | municipio | `{ "motivo" }` obligatorio. Pasa a `Rechazado`. |
+| `POST /reclamos/:id/rechazar` | municipio | `{ "motivo", "detalle"? }`. `motivo` es uno de "No corresponde al municipio", "No requiere arreglo" o "Duplicado"; se guarda en `motivoRechazoTipo` y el `detalle` en `motivoRechazo`. Pasa a `Rechazado`. |
 | `POST /fotos` | autenticado | Sube una imagen (`multipart`, campo `foto`, JPG/PNG/WebP/HEIC, hasta 8 MB). Devuelve `{ url }` para usar como `photoUrl` o `fotoResolucion`. |
 
 Los errores salen siempre como `{ "error": { "code", "message" } }`. Los códigos
@@ -97,7 +96,7 @@ tests/                 reglas de negocio y API completa (supertest)
   lleguen dos pedidos a la vez.
 - **SQLite sin enums.** Estados y categorías son texto y se validan en el borde.
 - **Aislamiento por municipio.** Un admin no ve ni gestiona reclamos de otro municipio.
-- **Prioridad y vencido en el servidor.** La app solo los muestra. No se guardan porque cambian
+- **Prioridad y atrasado en el servidor.** La app solo los muestra. No se guardan porque cambian
   con los días.
 - **Duplicados y DNI ya registrado.** Las reglas y el porqué están en
   [pozo/docs/decisiones.md](https://github.com/nicocoloritto/pozo/blob/dev/docs/decisiones.md).

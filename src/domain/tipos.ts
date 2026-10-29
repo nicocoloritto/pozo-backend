@@ -37,6 +37,16 @@ export type TipoVoto = 'sigue' | 'yaNoEsta';
 export const CATEGORIAS_PELIGROSAS: readonly Categoria[] = ['FallenPole', 'FallenTree', 'Outage', 'TrafficLight'];
 
 // A cuántas confirmaciones de otros vecinos pasa de Reportado a ConfirmadoPorVecinos.
-export const CONFIRMACIONES_NECESARIAS = 3;
+export const CONFIRMACIONES_NECESARIAS = 1;
+
+// A cuántos "ya no está" el reclamo pasa solo a Resuelto, desde cualquier estado abierto.
+export const VOTOS_YA_NO_ESTA_NECESARIOS = 10;
+
+// Motivos de rechazo permitidos. "Ya no está" no es un rechazo: lo resuelven los vecinos.
+export const MOTIVOS_RECHAZO = ['No corresponde al municipio', 'No requiere arreglo', 'Duplicado'] as const;
+export type MotivoRechazo = (typeof MOTIVOS_RECHAZO)[number];
+
+// Un reclamo Resuelto o Rechazado deja de devolverse para el mapa pasados estos días desde su cierre.
+export const DIAS_CERRADO_EN_MAPA = 7;
 
 export const NOTAS_MAX_CARACTERES = 280;

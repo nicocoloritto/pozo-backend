@@ -15,7 +15,7 @@ function leer<T>(archivo: string): T {
 
 type MunicipioSeed = { id: string; nombre: string; sigla: string };
 type BarrioSeed = { id: string; nombre: string; comuna: number; municipioId: string; latitude: number; longitude: number };
-type AreaSeed = { id: string; nombre: string; categorias: string[]; plazoMaximoDias: number };
+type AreaSeed = { id: string; nombre: string; categorias: string[] };
 type VecinoSeed = {
   id: string;
   firstName: string;
@@ -56,6 +56,7 @@ type ReclamoSeed = {
   notas?: { fecha: string; texto: string; autor: string }[];
   fotoResolucion?: string;
   fotoResolucionKey?: string;
+  motivoRechazoTipo?: string;
   motivoRechazo?: string;
 };
 
@@ -71,7 +72,7 @@ async function main() {
     await prisma.municipio.upsert({ where: { id: m.id }, create: m, update: {} });
   }
   for (const a of areas) {
-    const data = { nombre: a.nombre, categorias: JSON.stringify(a.categorias), plazoMaximoDias: a.plazoMaximoDias };
+    const data = { nombre: a.nombre, categorias: JSON.stringify(a.categorias) };
     await prisma.area.upsert({ where: { id: a.id }, create: { id: a.id, ...data }, update: {} });
   }
 
@@ -158,6 +159,7 @@ async function main() {
         fechaEstimada: r.fechaEstimada ? new Date(r.fechaEstimada) : undefined,
         fotoResolucion: r.fotoResolucion,
         fotoResolucionKey: r.fotoResolucionKey,
+        motivoRechazoTipo: r.motivoRechazoTipo,
         motivoRechazo: r.motivoRechazo,
         historial: {
           create: r.history.map((c) => ({

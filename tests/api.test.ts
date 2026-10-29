@@ -32,7 +32,12 @@ async function crearBase() {
   await prisma.municipio.upsert({ where: { id: 'otro' }, create: { id: 'otro', nombre: 'Otro', sigla: 'OTR' }, update: {} });
   await prisma.area.upsert({
     where: { id: 'bacheo' },
-    create: { id: 'bacheo', nombre: 'Bacheo', categorias: '["Pothole"]', plazoMaximoDias: 10 },
+    create: { id: 'bacheo', nombre: 'Bacheo', categorias: '["Pothole"]' },
+    update: {},
+  });
+  await prisma.area.upsert({
+    where: { id: 'otras' },
+    create: { id: 'otras', nombre: 'Otras', categorias: '["FallenTree","Outage"]' },
     update: {},
   });
   await prisma.barrio.createMany({
@@ -74,6 +79,9 @@ async function loginAdmin(email = 'admin@caba.gob.ar') {
 }
 
 const con = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+const DIA = 24 * 60 * 60 * 1000;
+const enDias = (n: number) => new Date(Date.now() + n * DIA).toISOString();
 
 async function publicar(token: string, cambios: Record<string, unknown> = {}) {
   const res = await request(app).post('/reclamos').set(con(token)).send({ ...reclamoValido, ...cambios });
@@ -361,21 +369,42 @@ describe('reclamos duplicados', () => {
 });
 
 describe('confirmaciones y votos', () => {
-  it('con 3 confirmaciones de otros vecinos pasa a ConfirmadoPorVecinos', async () => {
+  it('con 1 confirmación de otro vecino pasa a ConfirmadoPorVecinos; el autor no cuenta', async () => {
     const autor = await registrarVecino(1);
     const reclamo = await publicar(autor.token);
+    await request(app).post(`/reclamos/${reclamo.id}/votos`).set(con(autor.token)).send({ tipo: 'sigue' });
+    expect((await request(app).get(`/reclamos/${reclamo.id}`).set(con(autor.token))).body.status).toBe('Reportado');
 
-    for (const n of [2, 3]) {
-      const vecino = await registrarVecino(n);
-      const res = await request(app).post(`/reclamos/${reclamo.id}/confirmaciones`).set(con(vecino.token));
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('Reportado');
-    }
-    const tercero = await registrarVecino(4);
-    const res = await request(app).post(`/reclamos/${reclamo.id}/confirmaciones`).set(con(tercero.token));
+    const vecino = await registrarVecino(2);
+    const res = await request(app).post(`/reclamos/${reclamo.id}/confirmaciones`).set(con(vecino.token));
     expect(res.body.status).toBe('ConfirmadoPorVecinos');
-    expect(res.body.confirmaciones).toHaveLength(3);
-    expect(res.body.history.at(-1).description).toBe('Confirmado por 3 vecinos');
+    expect(res.body.confirmaciones).toHaveLength(1);
+    expect(res.body.history.at(-1).description).toBe('Confirmado por vecinos');
+  });
+
+  it('con 10 "ya no está" pasa solo a Resuelto, sin foto, y queda en el historial', async () => {
+    const autor = await registrarVecino(1);
+    const reclamo = await publicar(autor.token);
+    // Nueve votos ya cargados; el décimo llega por la API.
+    await prisma.usuario.createMany({
+      data: Array.from({ length: 9 }, (_, i) => ({
+        id: `votante-${i}`,
+        rol: 'vecino',
+        email: `votante${i}@pozo.com`,
+        passwordHash: 'x',
+        firstName: 'Votante',
+      })),
+    });
+    await prisma.voto.createMany({
+      data: Array.from({ length: 9 }, (_, i) => ({ reclamoId: reclamo.id, vecinoId: `votante-${i}`, tipo: 'yaNoEsta' })),
+    });
+    expect((await request(app).get(`/reclamos/${reclamo.id}`).set(con(autor.token))).body.status).toBe('Reportado');
+
+    const res = await request(app).post(`/reclamos/${reclamo.id}/votos`).set(con(autor.token)).send({ tipo: 'yaNoEsta' });
+    expect(res.body.status).toBe('Resuelto');
+    expect(res.body.fotoResolucion).toBeUndefined();
+    expect(res.body.history.at(-1)).toMatchObject({ status: 'Resuelto' });
+    expect(res.body.history.at(-1).description).toContain('Resuelto por los vecinos');
   });
 
   it('no deja confirmar el propio reclamo ni confirmar dos veces', async () => {
@@ -445,9 +474,7 @@ describe('gestión municipal', () => {
   async function reclamoConfirmado() {
     const autor = await registrarVecino(1);
     const reclamo = await publicar(autor.token);
-    for (const n of [2, 3, 4]) {
-      await request(app).post(`/reclamos/${reclamo.id}/confirmaciones`).set(con((await registrarVecino(n)).token));
-    }
+    await request(app).post(`/reclamos/${reclamo.id}/confirmaciones`).set(con((await registrarVecino(2)).token));
     return { reclamo, autor };
   }
 
@@ -457,11 +484,15 @@ describe('gestión municipal', () => {
     const accion = (ruta: string, cuerpo: object = {}, metodo: 'post' | 'put' = 'post') =>
       request(app)[metodo](`/reclamos/${reclamo.id}/${ruta}`).set(con(admin)).send(cuerpo);
 
-    expect((await accion('tomar')).body.status).toBe('EnviadoAlMunicipio');
-    expect((await accion('area', { areaId: 'bacheo' }, 'put')).body.areaAsignada).toBe('bacheo');
-    expect((await accion('fecha-estimada', { fechaEstimada: '2026-12-01' }, 'put')).body.fechaEstimada).toMatch(/^2026-12-01/);
+    const tomado = await accion('tomar');
+    expect(tomado.body).toMatchObject({ status: 'EnviadoAlMunicipio', areaAsignada: 'bacheo' });
     expect((await accion('notas', { texto: 'Cuadrilla en camino' })).body.notas).toHaveLength(1);
-    expect((await accion('reparacion')).body.status).toBe('EnReparacion');
+    // La fecha estimada solo se define en reparación.
+    expect((await accion('fecha-estimada', { fechaEstimada: enDias(5) }, 'put')).status).toBe(409);
+    const enReparacion = await accion('reparacion', { fechaEstimada: enDias(7) });
+    expect(enReparacion.body).toMatchObject({ status: 'EnReparacion', fechaEstimada: expect.any(String) });
+    const nueva = enDias(14);
+    expect((await accion('fecha-estimada', { fechaEstimada: nueva }, 'put')).body.fechaEstimada).toBe(nueva);
 
     const resuelto = await accion('resolver', { fotoResolucion: 'http://localhost/uploads/despues.jpg' });
     expect(resuelto.status).toBe(200);
@@ -475,7 +506,7 @@ describe('gestión municipal', () => {
     ]);
 
     // Cerrado: ya no se puede editar ni votar.
-    expect((await accion('area', { areaId: 'bacheo' }, 'put')).status).toBe(409);
+    expect((await accion('fecha-estimada', { fechaEstimada: enDias(5) }, 'put')).status).toBe(409);
     const vecino = await registrarVecino(5);
     expect((await request(app).post(`/reclamos/${reclamo.id}/votos`).set(con(vecino.token)).send({ tipo: 'yaNoEsta' })).status).toBe(409);
   });
@@ -494,28 +525,56 @@ describe('gestión municipal', () => {
     expect(res.body.error.code).toBe('INVALID_TRANSITION');
   });
 
-  it('exige área para reparar, foto para resolver y motivo para rechazar', async () => {
+  it('al tomar asigna sola el área de la categoría', async () => {
+    const reclamo = await publicar((await registrarVecino(1)).token, { category: 'Outage' });
+    const res = await request(app).post(`/reclamos/${reclamo.id}/tomar`).set(con(await loginAdmin()));
+    expect(res.body.areaAsignada).toBe('otras');
+  });
+
+  it('pasar a reparación exige la fecha estimada y no una anterior a hoy', async () => {
     const reclamo = await publicar((await registrarVecino(1)).token, { category: 'Outage' });
     const admin = await loginAdmin();
     await request(app).post(`/reclamos/${reclamo.id}/tomar`).set(con(admin));
+    const reparar = (cuerpo: object) => request(app).post(`/reclamos/${reclamo.id}/reparacion`).set(con(admin)).send(cuerpo);
 
-    const sinArea = await request(app).post(`/reclamos/${reclamo.id}/reparacion`).set(con(admin));
-    expect(sinArea.body.error.code).toBe('AREA_REQUIRED');
+    expect((await reparar({})).body.error.code).toBe('INVALID_INPUT');
+    expect((await reparar({ fechaEstimada: enDias(-3) })).body.error.code).toBe('INVALID_INPUT');
+    const sigue = await request(app).get(`/reclamos/${reclamo.id}`).set(con(admin));
+    expect(sigue.body.status).toBe('EnviadoAlMunicipio');
 
-    const sinMotivo = await request(app).post(`/reclamos/${reclamo.id}/rechazar`).set(con(admin)).send({ motivo: ' ' });
-    expect(sinMotivo.body.error.code).toBe('MOTIVO_REQUIRED');
-
-    const rechazado = await request(app).post(`/reclamos/${reclamo.id}/rechazar`).set(con(admin)).send({ motivo: 'Duplicado' });
-    expect(rechazado.body).toMatchObject({ status: 'Rechazado', motivoRechazo: 'Duplicado' });
+    expect((await reparar({ fechaEstimada: enDias(3) })).body.status).toBe('EnReparacion');
+    const cambiar = (fechaEstimada: string) =>
+      request(app).put(`/reclamos/${reclamo.id}/fecha-estimada`).set(con(admin)).send({ fechaEstimada });
+    expect((await cambiar(enDias(-3))).body.error.code).toBe('INVALID_INPUT');
+    expect((await cambiar(enDias(10))).status).toBe(200);
   });
 
-  it('valida nota vacía, área inexistente y fecha inválida', async () => {
+  it('exige foto para resolver y un motivo de la lista para rechazar', async () => {
+    const reclamo = await publicar((await registrarVecino(1)).token, { category: 'Outage' });
+    const admin = await loginAdmin();
+    await request(app).post(`/reclamos/${reclamo.id}/tomar`).set(con(admin));
+    await request(app).post(`/reclamos/${reclamo.id}/reparacion`).set(con(admin)).send({ fechaEstimada: enDias(3) });
+
+    const sinFoto = await request(app).post(`/reclamos/${reclamo.id}/resolver`).set(con(admin)).send({});
+    expect(sinFoto.body.error.code).toBe('FOTO_REQUIRED');
+
+    const rechazar = (cuerpo: object) => request(app).post(`/reclamos/${reclamo.id}/rechazar`).set(con(admin)).send(cuerpo);
+    expect((await rechazar({ motivo: ' ' })).body.error.code).toBe('MOTIVO_REQUIRED');
+    expect((await rechazar({ motivo: 'Ya no está' })).body.error.code).toBe('MOTIVO_REQUIRED');
+
+    const rechazado = await rechazar({ motivo: 'Duplicado', detalle: 'Es el EXP-26-00001' });
+    expect(rechazado.body).toMatchObject({
+      status: 'Rechazado',
+      motivoRechazoTipo: 'Duplicado',
+      motivoRechazo: 'Es el EXP-26-00001',
+    });
+  });
+
+  it('valida nota vacía y fecha inválida', async () => {
     const reclamo = await publicar((await registrarVecino(1)).token);
     const admin = await loginAdmin();
     const nota = await request(app).post(`/reclamos/${reclamo.id}/notas`).set(con(admin)).send({ texto: '   ' });
     expect(nota.body.error.code).toBe('NOTA_VACIA');
-    const area = await request(app).put(`/reclamos/${reclamo.id}/area`).set(con(admin)).send({ areaId: 'nada' });
-    expect(area.status).toBe(400);
     const fecha = await request(app).put(`/reclamos/${reclamo.id}/fecha-estimada`).set(con(admin)).send({ fechaEstimada: 'mañana' });
     expect(fecha.status).toBe(400);
   });
@@ -555,33 +614,48 @@ describe('consultas', () => {
     expect(mios.body.map((r: { id: string }) => r.id)).toEqual([primero.id]);
   });
 
-  it('cada reclamo trae su prioridad con el desglose y si está fuera de plazo', async () => {
+  it('con ?mapa=1 omite los cerrados hace más de 7 días; la lista normal los devuelve', async () => {
+    const vecino = await registrarVecino(1);
+    const dia = 24 * 60 * 60 * 1000;
+    const cerrar = async (id: string, status: string, hace: number) => {
+      await prisma.reclamo.update({ where: { id }, data: { status } });
+      await prisma.cambioEstado.create({ data: { reclamoId: id, status, description: status, createdAt: new Date(Date.now() - hace * dia) } });
+    };
+    const abierto = await publicar(vecino.token, { category: 'StreetLight' });
+    const resueltoViejo = await publicar(vecino.token, { category: 'Trench' });
+    const rechazadoViejo = await publicar(vecino.token, { category: 'Outage' });
+    const resueltoReciente = await publicar(vecino.token, { category: 'FallenPole' });
+    await cerrar(resueltoViejo.id, 'Resuelto', 8);
+    await cerrar(rechazadoViejo.id, 'Rechazado', 8);
+    await cerrar(resueltoReciente.id, 'Resuelto', 6);
+
+    const ids = async (ruta: string) =>
+      ((await request(app).get(ruta).set(con(vecino.token))).body as { id: string }[]).map((r) => r.id).sort();
+    expect(await ids('/reclamos?mapa=1')).toEqual([abierto.id, resueltoReciente.id].sort());
+    expect(await ids('/reclamos')).toHaveLength(4);
+  });
+
+  it('cada reclamo trae su prioridad y si está atrasado', async () => {
     const vecino = await registrarVecino(1);
     const { id } = await publicar(vecino.token, { category: 'FallenTree', severity: 'High' });
     const admin = await loginAdmin();
     await request(app).post(`/reclamos/${id}/tomar`).set(con(admin));
-    // Creado hace 30 días y tomado hace 12: el plazo de Bacheo (10 días) se cuenta desde la toma.
+    await request(app).post(`/reclamos/${id}/reparacion`).set(con(admin)).send({ fechaEstimada: enDias(3) });
     const dia = 24 * 60 * 60 * 1000;
-    await prisma.reclamo.update({ where: { id }, data: { createdAt: new Date(Date.now() - 30 * dia), areaAsignada: 'bacheo' } });
-    await prisma.cambioEstado.updateMany({
-      where: { reclamoId: id, status: 'EnviadoAlMunicipio' },
-      data: { createdAt: new Date(Date.now() - 12 * dia) },
-    });
+    await prisma.reclamo.update({ where: { id }, data: { createdAt: new Date(Date.now() - 30 * dia) } });
 
+    // 30 días abierto, sin votos: ni la severidad ni la categoría suman.
     const res = await request(app).get(`/reclamos/${id}`).set(con(admin));
-    expect(res.body.prioridad).toBe(130);
-    expect(res.body.desglosePrioridad).toEqual([
-      { motivo: 'Categoría peligrosa', puntos: 50 },
-      { motivo: 'Severidad alta', puntos: 20 },
-      { motivo: '30 días abierto', puntos: 60 },
-    ]);
-    expect(res.body.vencido).toBe(true);
+    expect(res.body.prioridad).toBe(60);
+    expect(res.body.desglosePrioridad).toBeUndefined();
+    expect(res.body.atrasado).toBe(false);
 
-    await prisma.cambioEstado.updateMany({
-      where: { reclamoId: id, status: 'EnviadoAlMunicipio' },
-      data: { createdAt: new Date(Date.now() - 5 * dia) },
-    });
-    expect((await request(app).get('/reclamos').set(con(admin))).body[0].vencido).toBe(false);
+    // Con la fecha estimada ya pasada y el reclamo abierto, está atrasado.
+    await prisma.reclamo.update({ where: { id }, data: { fechaEstimada: new Date(Date.now() - 3 * dia) } });
+    expect((await request(app).get('/reclamos').set(con(admin))).body[0].atrasado).toBe(true);
+
+    await prisma.reclamo.update({ where: { id }, data: { fechaEstimada: new Date(Date.now() + 3 * dia) } });
+    expect((await request(app).get(`/reclamos/${id}`).set(con(admin))).body.atrasado).toBe(false);
   });
 
   it('expone municipios y áreas', async () => {
@@ -695,6 +769,29 @@ describe('estadísticas', () => {
     });
     expect(res.body.evolucionUltimos6Meses).toHaveLength(6);
     expect(res.body.evolucionUltimos6Meses.reduce((suma: number, m: { reclamos: number }) => suma + m.reclamos, 0)).toBe(4);
+  });
+
+  it('los resueltos por los vecinos cuentan como resueltos', async () => {
+    const vecino = await registrarVecino(1);
+    await prisma.reclamo.create({
+      data: {
+        id: 'EXP-TEST-V',
+        caseNumber: 'EXP-TEST-V',
+        autorId: vecino.id,
+        municipioId: 'caba',
+        category: 'Pothole',
+        severity: 'Low',
+        status: 'Resuelto',
+        photoUrl: 'http://localhost/uploads/foto.jpg',
+        latitude: -34.6,
+        longitude: -58.4,
+        locationSource: 'Device',
+        neighborhood: 'Caballito',
+        historial: { create: { status: 'Resuelto', description: 'Resuelto por los vecinos: el problema ya no está' } },
+      },
+    });
+    const res = await request(app).get('/barrios/caballito/estadisticas').set(con(await loginAdmin()));
+    expect(res.body).toMatchObject({ totalReclamos: 1, resueltos: 1, porcentajeResolucion: 100 });
   });
 
   it('un barrio sin reclamos devuelve todo en 0', async () => {

@@ -53,14 +53,13 @@ const nuevoReclamoSchema = z
   });
 
 const votoSchema = z.object({ tipo: z.enum(['sigue', 'yaNoEsta'], { error: 'El voto no es válido.' }) });
-const areaSchema = z.object({ areaId: z.string({ error: 'Falta el área.' }).min(1, 'Falta el área.') });
 const fechaSchema = z.object({
   fechaEstimada: z.iso.datetime({ offset: true, error: 'La fecha estimada no es válida.' }).or(
     z.iso.date({ error: 'La fecha estimada no es válida.' })
   ),
 });
 const resolverSchema = z.object({ fotoResolucion: z.string().optional() });
-const rechazarSchema = z.object({ motivo: z.string().optional() });
+const rechazarSchema = z.object({ motivo: z.string().optional(), detalle: z.string().optional() });
 const notaSchema = z.object({
   texto: z.string({ error: 'La nota no puede estar vacía' }).max(NOTAS_MAX_CARACTERES, `La nota puede tener hasta ${NOTAS_MAX_CARACTERES} caracteres.`),
 });
@@ -71,16 +70,17 @@ function idDe(req: Request): string {
   return id;
 }
 
-async function aDto(reclamo: ReclamoConRelaciones) {
-  return aReclamoDto(reclamo, await reclamos.contextoReclamoDto());
+function aDto(reclamo: ReclamoConRelaciones) {
+  return aReclamoDto(reclamo, reclamos.contextoReclamoDto());
 }
 
 export const rutasReclamos = Router();
 rutasReclamos.use(autenticar);
 
 rutasReclamos.get('/', async (req, res) => {
-  const lista = await reclamos.listar(usuarioActual(req), req.query.mios === '1');
-  const contexto = await reclamos.contextoReclamoDto();
+  // `?mapa=1` lo usa solo el mapa: oculta los reclamos cerrados hace más de 7 días.
+  const lista = await reclamos.listar(usuarioActual(req), req.query.mios === '1', req.query.mapa === '1');
+  const contexto = reclamos.contextoReclamoDto();
   res.json(lista.map((reclamo) => aReclamoDto(reclamo, contexto)));
 });
 
@@ -111,7 +111,8 @@ rutasReclamos.post('/:id/tomar', exigirRol('admin'), async (req, res) => {
 });
 
 rutasReclamos.post('/:id/reparacion', exigirRol('admin'), async (req, res) => {
-  res.json(await aDto(await reclamos.pasarAReparacion(usuarioActual(req), idDe(req))));
+  const { fechaEstimada } = fechaSchema.parse(req.body);
+  res.json(await aDto(await reclamos.pasarAReparacion(usuarioActual(req), idDe(req), new Date(fechaEstimada))));
 });
 
 rutasReclamos.post('/:id/resolver', exigirRol('admin'), async (req, res) => {
@@ -120,13 +121,8 @@ rutasReclamos.post('/:id/resolver', exigirRol('admin'), async (req, res) => {
 });
 
 rutasReclamos.post('/:id/rechazar', exigirRol('admin'), async (req, res) => {
-  const { motivo } = rechazarSchema.parse(req.body);
-  res.json(await aDto(await reclamos.rechazar(usuarioActual(req), idDe(req), motivo ?? '')));
-});
-
-rutasReclamos.put('/:id/area', exigirRol('admin'), async (req, res) => {
-  const { areaId } = areaSchema.parse(req.body);
-  res.json(await aDto(await reclamos.asignarArea(usuarioActual(req), idDe(req), areaId)));
+  const { motivo, detalle } = rechazarSchema.parse(req.body);
+  res.json(await aDto(await reclamos.rechazar(usuarioActual(req), idDe(req), motivo ?? '', detalle ?? '')));
 });
 
 rutasReclamos.put('/:id/fecha-estimada', exigirRol('admin'), async (req, res) => {
