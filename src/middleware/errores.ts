@@ -11,6 +11,7 @@ export function rutaInexistente(_req: Request, res: Response) {
 // devuelve un 500 genérico: nunca se filtra el detalle interno al cliente.
 export function manejarErrores(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (err instanceof AppError) {
+    if (err.reintentarEnSegundos) res.setHeader('Retry-After', String(err.reintentarEnSegundos));
     res.status(err.status).json({ error: { ...err.datos, code: err.code, message: err.message } });
     return;
   }

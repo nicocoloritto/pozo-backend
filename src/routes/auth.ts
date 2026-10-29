@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { normalizarNumeroDni } from '../domain/dni';
-import { autenticar, usuarioActual } from '../middleware/autenticacion';
+import { AppError } from '../domain/errores';
+import { autenticar, exigirRol, usuarioActual } from '../middleware/autenticacion';
+import {
+  consultasDniPorIp,
+  exigirSinBloqueo,
+  fallosLoginPorCuenta,
+  fallosLoginPorIp,
+} from '../middleware/limiteIntentos';
 import * as auth from '../services/auth';
 import { aUsuarioDto } from '../services/dto';
 
@@ -34,14 +41,40 @@ rutasAuth.post('/registro', async (req, res) => {
 // Después de escanear el DNI, antes de pedir email y contraseña: si ya tiene cuenta, la app
 // manda a iniciar sesión.
 rutasAuth.post('/dni-registrado', async (req, res) => {
+  const ip = req.ip ?? 'desconocida';
+  exigirSinBloqueo(consultasDniPorIp, ip);
+  consultasDniPorIp.sumar(ip);
   const { documentNumber, sex, birthDate } = dniSchema.parse(req.body);
   res.json({ registrado: await auth.dniRegistrado(documentNumber, sex, birthDate) });
 });
 
 rutasAuth.post('/login', async (req, res) => {
   const { email, password } = loginSchema.parse(req.body);
-  const usuario = await auth.login(email, password);
+  const ip = req.ip ?? 'desconocida';
+  const cuenta = email.trim().toLowerCase();
+  exigirSinBloqueo(fallosLoginPorIp, ip);
+  exigirSinBloqueo(fallosLoginPorCuenta, cuenta);
+
+  let usuario;
+  try {
+    usuario = await auth.login(email, password);
+  } catch (err) {
+    if (err instanceof AppError && (err.code === 'EMAIL_NOT_FOUND' || err.code === 'WRONG_PASSWORD')) {
+      fallosLoginPorIp.sumar(ip);
+      fallosLoginPorCuenta.sumar(cuenta);
+    }
+    throw err;
+  }
+  fallosLoginPorCuenta.olvidar(cuenta);
   res.json({ token: auth.firmarToken(usuario.id), user: aUsuarioDto(usuario) });
+});
+
+// Elimina la cuenta de quien hace el pedido (solo vecinos): se borran sus datos personales y
+// deja de poder iniciar sesión, pero sus reclamos siguen, sin nombre, porque el municipio y
+// otros vecinos trabajan sobre ellos.
+rutasAuth.delete('/cuenta', autenticar, exigirRol('vecino'), async (req, res) => {
+  await auth.eliminarCuenta(usuarioActual(req));
+  res.status(204).end();
 });
 
 rutasAuth.get('/me', autenticar, (req, res) => {

@@ -59,6 +59,9 @@ model Usuario {
   municipioId    String? // solo admin
   municipio      Municipio? @relation(fields: [municipioId], references: [id])
   createdAt      DateTime  @default(now())
+  // Cuenta eliminada por su dueño: se conserva la fila (los reclamos y votos la referencian)
+  // pero sin datos personales y sin poder iniciar sesión. Ver services/auth.ts.
+  eliminadaEn    DateTime?
   reclamos       Reclamo[]
   votos          Voto[]
 }

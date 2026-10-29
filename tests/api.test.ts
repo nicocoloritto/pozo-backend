@@ -3,6 +3,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { crearApp } from '../src/app';
 import { prisma } from '../src/db';
+import { reiniciarLimites } from '../src/middleware/limiteIntentos';
 
 const app = crearApp();
 
@@ -82,6 +83,7 @@ async function publicar(token: string, cambios: Record<string, unknown> = {}) {
 
 beforeAll(limpiar);
 beforeEach(async () => {
+  reiniciarLimites();
   await limpiar();
   await crearBase();
 });
@@ -187,6 +189,85 @@ describe('auth', () => {
   it('exige un token válido', async () => {
     expect((await request(app).get('/reclamos')).status).toBe(401);
     expect((await request(app).get('/reclamos').set(con('basura'))).status).toBe(401);
+  });
+});
+
+describe('límite de intentos de login', () => {
+  const intentar = (email: string, password: string) => request(app).post('/auth/login').send({ email, password });
+
+  it('bloquea una cuenta después de 5 contraseñas incorrectas, aunque la sexta sea la correcta', async () => {
+    for (let i = 0; i < 5; i++) {
+      expect((await intentar('admin@caba.gob.ar', 'mala')).status).toBe(401);
+    }
+    const bloqueado = await intentar('admin@caba.gob.ar', '123456');
+    expect(bloqueado.status).toBe(429);
+    expect(bloqueado.body.error.code).toBe('TOO_MANY_ATTEMPTS');
+    expect(Number(bloqueado.headers['retry-after'])).toBeGreaterThan(0);
+    // Otra cuenta no se ve afectada.
+    expect((await intentar('admin@otro.gob.ar', '123456')).status).toBe(200);
+  });
+
+  it('un login correcto borra los fallos de esa cuenta', async () => {
+    for (let i = 0; i < 4; i++) await intentar('admin@caba.gob.ar', 'mala');
+    expect((await intentar('admin@caba.gob.ar', '123456')).status).toBe(200);
+    for (let i = 0; i < 4; i++) expect((await intentar('admin@caba.gob.ar', 'mala')).status).toBe(401);
+  });
+
+  it('bloquea a una IP que prueba muchos emails distintos', async () => {
+    for (let i = 0; i < 20; i++) {
+      expect((await intentar(`nadie${i}@pozo.com`, 'x')).status).toBe(401);
+    }
+    expect((await intentar('admin@caba.gob.ar', '123456')).status).toBe(429);
+  });
+
+  it('limita las consultas de "DNI ya registrado" por IP', async () => {
+    const consulta = () =>
+      request(app).post('/auth/dni-registrado').send({ documentNumber: '30111222', sex: 'F', birthDate: '01/01/1990' });
+    for (let i = 0; i < 30; i++) expect((await consulta()).status).toBe(200);
+    expect((await consulta()).status).toBe(429);
+  });
+});
+
+describe('borrar la cuenta propia', () => {
+  it('anonimiza la cuenta, invalida el token y libera el email y el DNI', async () => {
+    const vecino = await registrarVecino(1);
+    const reclamo = await publicar(vecino.token);
+
+    const res = await request(app).delete('/auth/cuenta').set(con(vecino.token));
+    expect(res.status).toBe(204);
+
+    // El token viejo ya no sirve y el email ya no inicia sesión.
+    expect((await request(app).get('/auth/me').set(con(vecino.token))).status).toBe(401);
+    const login = await request(app).post('/auth/login').send({ email: 'vecino1@pozo.com', password: '123456' });
+    expect(login.body.error.code).toBe('EMAIL_NOT_FOUND');
+
+    // No queda ningún dato personal.
+    const fila = await prisma.usuario.findUniqueOrThrow({ where: { id: vecino.id } });
+    expect(fila).toMatchObject({
+      firstName: 'Cuenta eliminada',
+      lastName: null,
+      documentNumber: null,
+      dniNormalizado: null,
+      birthDate: null,
+    });
+    expect(fila.email).not.toContain('vecino1');
+    expect(fila.eliminadaEn).not.toBeNull();
+
+    // El reclamo sigue, para el municipio y los demás vecinos.
+    const admin = await loginAdmin();
+    const visto = await request(app).get(`/reclamos/${reclamo.id}`).set(con(admin));
+    expect(visto.status).toBe(200);
+    expect(visto.body.autorId).toBe(vecino.id);
+
+    // La misma persona se puede volver a registrar con el mismo email y DNI.
+    const otraVez = await registrarVecino(1);
+    expect(otraVez.id).not.toBe(vecino.id);
+  });
+
+  it('exige sesión y no deja borrar una cuenta del municipio', async () => {
+    expect((await request(app).delete('/auth/cuenta')).status).toBe(401);
+    const admin = await request(app).delete('/auth/cuenta').set(con(await loginAdmin()));
+    expect(admin.status).toBe(403);
   });
 });
 

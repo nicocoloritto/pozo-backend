@@ -20,15 +20,18 @@ npm run dev              # http://localhost:3000
 ```
 
 ```bash
-npm test                 # 67 tests, usan su propia base (test.db)
+npm test                 # 66 tests, usan su propia base (test.db)
 npm run typecheck
 npm run build && npm start
 ```
 
 `npm run db:reset` borra la base de desarrollo y vuelve a cargar los datos de prueba.
 
-Los datos de prueba salen de `prisma/data/*.json`, una copia de `mobile/data/` del repo de la app (si allá cambian los datos de prueba, hay que
-actualizar la copia): las mismas cuentas
+Después de traer cambios del repo (`git pull`), corré `npm run setup` otra vez: regenera el
+cliente de Prisma y actualiza la base si el schema cambió. Sin eso, los tests pueden fallar con
+errores como "Property 'barrio' does not exist".
+
+Los datos de prueba están en `prisma/data/*.json` y los carga `npm run setup`: las cuentas
 (`vecino1@pozo.com`, `vecino2@pozo.com`, `vecino3@pozo.com`, `admin@caba.gob.ar`, contraseña
 `123456`) y los 17 reclamos de ejemplo. Los vecinos que figuran como confirmadores en esos
 reclamos pero no tienen cuenta de prueba se crean como cuentas inactivas (`@seed.pozo.invalid`).
@@ -45,8 +48,9 @@ del cuerpo del pedido: el autor de un reclamo y quien vota son el usuario del to
 |---|---|---|
 | `POST /auth/registro` | público | Crea una cuenta de vecino con los datos del DNI. Un DNI, una cuenta. |
 | `POST /auth/dni-registrado` | público | `{ documentNumber, sex, birthDate }` → `{ registrado }`. `true` solo si coinciden los tres. |
-| `POST /auth/login` | público | Inicia sesión. |
+| `POST /auth/login` | público | Inicia sesión. Tras 5 fallos seguidos en una cuenta, o 20 desde una misma IP, responde `429 TOO_MANY_ATTEMPTS` (con `Retry-After`) durante 15 minutos. |
 | `GET /auth/me` | autenticado | Usuario de la sesión. |
+| `DELETE /auth/cuenta` | vecino | Elimina la cuenta propia: se borran los datos personales y el token deja de servir. Los reclamos quedan, sin nombre. El email y el DNI se pueden volver a registrar. |
 | `GET /municipios`, `GET /areas` | autenticado | Catálogos. |
 | `GET /municipios/:id/barrios` | autenticado | Barrios del municipio, por comuna y nombre. Un admin solo consulta el suyo. |
 | `GET /barrios/:id/estadisticas` | autenticado | Totales, % resuelto, días promedio, por categoría, por estado y últimos 6 meses, calculados con los reclamos del barrio. |
@@ -102,6 +106,6 @@ tests/                 reglas de negocio y API completa (supertest)
 
 ## Pendiente
 
-- Conectar la app (reemplazar `mobile/services/` del repo pozo por llamadas a esta API).
-- Límite de intentos en el login y borrado de la cuenta propia.
 - Desplegar: hoy corre solo en local. En producción `JWT_SECRET` es obligatorio.
+- El límite de intentos vive en la memoria del servidor: se reinicia con él y no sirve si algún
+  día corren varias instancias (habría que guardarlo en la base).

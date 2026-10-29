@@ -18,7 +18,7 @@ export async function autenticar(req: Request, _res: Response, next: NextFunctio
   if (!usuarioId) throw new AppError('UNAUTHENTICATED', 'Iniciá sesión para continuar');
 
   const usuario = await prisma.usuario.findUnique({ where: { id: usuarioId } });
-  if (!usuario) throw new AppError('UNAUTHENTICATED', 'Iniciá sesión para continuar');
+  if (!usuario || usuario.eliminadaEn) throw new AppError('UNAUTHENTICATED', 'Iniciá sesión para continuar');
 
   req.usuario = usuario;
   next();
